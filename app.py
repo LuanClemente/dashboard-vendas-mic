@@ -249,11 +249,11 @@ if df is not None:
 
     k3.metric("Falta Vender", f"R$ {falta_emp:,.2f}")
 
-    # --- PERFORMASSE ---
+    # --- PERFORMANCE, ---
     if st.session_state['usuario_logado']:
         st.divider()
         u_logado = config['usuarios'][st.session_state['usuario_logado']]
-        st.markdown(f"### 👤 Performasse: {u_logado['nome']}")
+        st.markdown(f"### 👤 PERFORMANCE: {u_logado['nome']}")
         
         nome_busca = st.text_input("Filtrar nome (apague se não aparecer nada):", value=u_logado['nome'].split()[0])
         
