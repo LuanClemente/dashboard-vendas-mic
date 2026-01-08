@@ -38,29 +38,21 @@ def salvar_config(dados):
 
 config = carregar_config()
 
-# --- CÁLCULO DE DIAS ÚTEIS (CORRIGIDO PARA O FINAL DO MÊS) ---
+# --- CÁLCULO DE DIAS ÚTEIS ---
 def calcular_dias_uteis_restantes_mes():
     hoje = date.today()
-    
-    # Descobre o último dia do mês ATUAL
     ultimo_dia_numero = calendar.monthrange(hoje.year, hoje.month)[1]
     data_fim_mes = date(hoje.year, hoje.month, ultimo_dia_numero)
     
-    # Se já passou do mês (ex: bug de virada de ano), retorna 0
-    if hoje > data_fim_mes:
-        return 0
+    if hoje > data_fim_mes: return 0
     
-    # np.busday_count conta dias úteis (Seg-Sex)
-    # Adicionamos +1 no fim porque o numpy exclui a data final da contagem
     dias = np.busday_count(hoje, data_fim_mes + timedelta(days=1))
     return max(0, int(dias))
 
-# --- BARRA DE PROGRESSO CUSTOMIZADA (LOADING BAR) ---
+# --- BARRA DE PROGRESSO CUSTOMIZADA ---
 def barra_progresso_linda(atual, meta, titulo="Progresso"):
     porcentagem = (atual / meta * 100) if meta > 0 else 0
-    porcentagem_visual = min(porcentagem, 100) # Trava visualmente em 100%
-    
-    # Gradiente Vermelho -> Amarelo -> Verde
+    porcentagem_visual = min(porcentagem, 100) 
     cor_barra = "linear-gradient(90deg, #ff4b4b 0%, #ffca28 50%, #21c354 100%)"
     
     html = f"""
@@ -118,7 +110,7 @@ def carregar_dados():
     except: return None, None
 
 # ==============================================================================
-# 🔐 BARRA LATERAL
+# 🔐 BARRA LATERAL (LOGIN, CADASTRO E GERENCIAMENTO)
 # ==============================================================================
 if os.path.exists(ARQUIVO_LOGO):
     st.sidebar.image(ARQUIVO_LOGO, use_container_width=True)
@@ -131,6 +123,7 @@ st.sidebar.subheader("🔐 Acesso Restrito")
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 
 if st.session_state['usuario_logado'] is None:
+    # --- ÁREA DESLOGADA ---
     tab_login, tab_cadastro = st.sidebar.tabs(["Entrar", "Cadastrar"])
     with tab_login:
         u_in = st.text_input("Usuário")
@@ -153,25 +146,57 @@ if st.session_state['usuario_logado'] is None:
                     st.success("Cadastrado!")
                 else: st.error("Já existe.")
 else:
+    # --- ÁREA LOGADA ---
     uid = st.session_state['usuario_logado']
+    
+    # Verifica se usuário ainda existe (caso tenha sido excluído)
     if uid in config['usuarios']:
         u_data = config['usuarios'][uid]
         st.sidebar.success(f"Olá, {u_data['nome']}")
-        with st.sidebar.expander("🎯 Minha Meta"):
-            nm = st.number_input("Meta (R$)", value=float(u_data['meta']))
-            if st.button("Salvar Meta"):
+        
+        # 1. METAS
+        with st.sidebar.expander("🎯 Metas"):
+            nm = st.number_input("Minha Meta (R$)", value=float(u_data['meta']))
+            if st.button("Salvar Individual"):
                 config['usuarios'][uid]['meta'] = nm
                 salvar_config(config)
                 st.rerun()
-        with st.sidebar.expander("🏢 Meta MIC"):
-            ng = st.number_input("Meta Geral (R$)", value=float(config['meta_geral']))
+            st.markdown("---")
+            ng = st.number_input("Meta MIC (R$)", value=float(config['meta_geral']))
             if st.button("Salvar Geral"):
                 config['meta_geral'] = ng
                 salvar_config(config)
                 st.rerun()
+
+        # 2. GERENCIAR CONTA (NOVO!)
+        with st.sidebar.expander("⚙️ Gerenciar Conta"):
+            st.markdown("**Alterar Senha**")
+            senha_antiga = st.text_input("Senha Atual", type="password", key="p1")
+            senha_nova = st.text_input("Nova Senha", type="password", key="p2")
+            if st.button("Atualizar Senha"):
+                if senha_antiga == u_data['senha']:
+                    config['usuarios'][uid]['senha'] = senha_nova
+                    salvar_config(config)
+                    st.success("Senha alterada!")
+                else:
+                    st.error("Senha atual incorreta!")
+            
+            st.divider()
+            st.markdown("**Zona de Perigo**")
+            confirmar_exclusao = st.checkbox("Quero excluir minha conta")
+            if st.button("🗑️ Excluir Conta", disabled=not confirmar_exclusao):
+                del config['usuarios'][uid]
+                salvar_config(config)
+                st.session_state['usuario_logado'] = None
+                st.rerun()
+
+        # 3. LOGOUT
         if st.sidebar.button("Sair"):
             st.session_state['usuario_logado'] = None
             st.rerun()
+    else:
+        st.session_state['usuario_logado'] = None
+        st.rerun()
 
 # ==============================================================================
 # 📊 DASHBOARD
@@ -185,16 +210,13 @@ if df is not None:
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
     
-    # Filtro Data: Padrão 01 até Último dia do Mês
     hoje = date.today()
     ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
     data_inicio_padrao = hoje.replace(day=1)
     data_fim_padrao = date(hoje.year, hoje.month, ultimo_dia)
     
-    # Usuário pode mudar, mas o padrão já vem certo
     periodo = c2.date_input("Período", [data_inicio_padrao, data_fim_padrao])
     
-    # Aplica Filtros
     df_filt = df.copy()
     if isinstance(periodo, list) and len(periodo) == 2:
         df_filt = df_filt[(df_filt['data_final'].dt.date >= periodo[0]) & (df_filt['data_final'].dt.date <= periodo[1])]
@@ -202,45 +224,36 @@ if df is not None:
     if status_sel != "Todos":
         df_filt = df_filt[df_filt['status_ped'] == status_sel]
 
-    # CÁLCULO DE DIAS ÚTEIS (SEMPRE ATE O FIM DO MES)
     dias_uteis_restantes = calcular_dias_uteis_restantes_mes()
 
     st.divider()
 
-    # ==========================================================================
-    # 🏢 META MIC (LOADING BAR)
-    # ==========================================================================
+    # --- META MIC ---
     st.markdown("## 🏢 META MIC")
-    
     tot_geral = df_filt['valor_final'].sum()
     meta_emp = config['meta_geral']
     falta_emp = max(0, meta_emp - tot_geral)
     
-    # Barra de Progresso Estilosa
     barra_progresso_linda(tot_geral, meta_emp, titulo="Progresso Geral")
 
-    # KPIs Abaixo da Barra
     k1, k2, k3 = st.columns(3)
     k1.metric("Vendas Totais", f"R$ {tot_geral:,.2f}")
     
-    # Meta Diária Geral (Divisão correta pelos dias úteis)
     if dias_uteis_restantes > 0 and falta_emp > 0:
         diaria_geral = falta_emp / dias_uteis_restantes
-        k2.metric("Meta Diária (Restante)", f"R$ {diaria_geral:,.2f}", help=f"Considerando {dias_uteis_restantes} dias úteis até o fim do mês")
+        k2.metric("Meta Diária (Restante)", f"R$ {diaria_geral:,.2f}", help=f"{dias_uteis_restantes} dias úteis restantes no mês")
     elif falta_emp > 0:
-        # Se dias úteis acabaram mas meta não foi batida
-        k2.metric("Meta Diária (Restante)", f"R$ {falta_emp:,.2f}", help="Vender tudo HOJE!")
+        k2.metric("Meta Diária (Restante)", f"R$ {falta_emp:,.2f}", help="Prazo esgotado ou último dia!")
     else:
         k2.metric("Meta Diária (Restante)", "R$ 0,00", "Meta Batida! 🚀")
 
     k3.metric("Falta Vender", f"R$ {falta_emp:,.2f}")
 
+    # --- PERFORMASSE ---
     if st.session_state['usuario_logado']:
         st.divider()
         u_logado = config['usuarios'][st.session_state['usuario_logado']]
-        
-        # Título ajustado
-        st.markdown(f"### 👤 Peformance: {u_logado['nome']}")
+        st.markdown(f"### 👤 Performasse: {u_logado['nome']}")
         
         nome_busca = st.text_input("Filtrar nome (apague se não aparecer nada):", value=u_logado['nome'].split()[0])
         
@@ -251,7 +264,6 @@ if df is not None:
             meta_u = float(u_logado['meta'])
             falta_u = max(0, meta_u - tot_u)
             
-            # Cálculo Diário Individual
             if dias_uteis_restantes > 0 and falta_u > 0:
                 diaria_u = falta_u / dias_uteis_restantes
             elif falta_u > 0:
@@ -269,7 +281,6 @@ if df is not None:
             else:
                 ku4.metric("Status", "Meta Batida! 🎉" if falta_u == 0 else "Mês Fechado")
 
-            # Barra Individual
             barra_progresso_linda(tot_u, meta_u, titulo="Meu Progresso")
 
             with st.expander("Ver meus pedidos detalhados"):
@@ -277,12 +288,9 @@ if df is not None:
         else:
             st.warning("Coluna de vendedor não encontrada.")
 
-    # ==========================================================================
-    # 🏆 RANKING
-    # ==========================================================================
+    # --- RANKING ---
     st.divider()
     g1, g2 = st.columns(2)
-    
     if col_vend_nome:
         rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
         fig_r = px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', title="🏆 Top Vendedores", text_auto=True)
@@ -292,6 +300,5 @@ if df is not None:
     evol = df_filt.groupby('data_final')['valor_final'].sum().reset_index()
     fig_l = px.line(evol, x='data_final', y='valor_final', markers=True, title="📈 Evolução Diária")
     g2.plotly_chart(fig_l, use_container_width=True)
-
 else:
     st.error(f"Arquivo '{ARQUIVO_DADOS}' não encontrado.")
