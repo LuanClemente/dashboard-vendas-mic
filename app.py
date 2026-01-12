@@ -1,12 +1,13 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 import json
-from datetime import datetime, date, timedelta
+from datetime import date, timedelta
 import calendar
 import numpy as np
+from PIL import Image # Para lidar com imagens grandes
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÕES INICIAIS
@@ -14,29 +15,118 @@ import numpy as np
 st.set_page_config(page_title="Sistema Comercial MIC", layout="wide", page_icon="📊")
 
 ARQUIVO_DADOS = "lista.csv" 
-ARQUIVO_CONFIG = "usuarios.json"
 ARQUIVO_LOGO = "logo.png"
 
 # --- FUNÇÕES AUXILIARES ---
-def carregar_config():
-    dados_padrao = {
-        "meta_geral": 100000,
-        "usuarios": {
-            "luan": {"senha": "123", "meta": 20000, "nome": "Luan Clemente"},
-            "vendedor": {"senha": "123", "meta": 15000, "nome": "Vendedor Padrão"}
-        }
-    }
-    if not os.path.exists(ARQUIVO_CONFIG) or os.stat(ARQUIVO_CONFIG).st_size == 0:
-        with open(ARQUIVO_CONFIG, "w") as f: json.dump(dados_padrao, f)
-        return dados_padrao
+
+# Função para redimensionar imagens grandes e evitar o DecompressionBombError
+def carregar_imagem_segura(caminho_imagem, max_pixels=80000000): # Limite seguro padrão
     try:
-        with open(ARQUIVO_CONFIG, "r") as f: return json.load(f)
-    except: return dados_padrao
+        # Abre a imagem
+        img = Image.open(caminho_imagem)
+        
+        # Verifica o tamanho em pixels
+        pixels = img.width * img.height
+        
+        if pixels > max_pixels:
+            st.warning(f"A imagem {caminho_imagem} é muito grande e foi redimensionada para exibição.")
+            # Redimensiona mantendo a proporção (thumbnail)
+            img.thumbnail((1024, 1024)) 
+            return img
+        else:
+            return img
+    except Exception as e:
+        st.error(f"Erro ao carregar imagem: {e}")
+        return None
 
-def salvar_config(dados):
-    with open(ARQUIVO_CONFIG, "w") as f: json.dump(dados, f)
+# --- BANCO DE DADOS (GOOGLE SHEETS) ---
+# Função para buscar usuários na planilha
+def get_users_from_sheets(conn):
+    try:
+        # Lê a planilha. ttl=0 garante que os dados não fiquem em cache eternamente
+        # e sejam atualizados a cada recarga ou ação.
+        df_users = conn.read(ttl=0)
+        # Retorna um dicionário fácil de usar: {login: {senha, meta, nome}}
+        # Assume colunas: Login, Senha, Meta, Nome
+        users_dict = {}
+        if not df_users.empty:
+             for index, row in df_users.iterrows():
+                 # Garante que os campos existem para evitar KeyErrors
+                 if all(col in df_users.columns for col in ['Login', 'Senha', 'Meta', 'Nome']):
+                     users_dict[str(row['Login'])] = {
+                         "senha": str(row['Senha']),
+                         "meta": float(row['Meta']),
+                         "nome": str(row['Nome'])
+                     }
+        return users_dict, df_users
+    except Exception as e:
+        st.error(f"Erro ao conectar com Google Sheets: {e}")
+        return {}, pd.DataFrame()
 
-config = carregar_config()
+# Função para salvar novo usuário na planilha
+def save_user_to_sheets(conn, df_antigo, novo_login, nova_senha, nova_meta, novo_nome):
+    try:
+        novo_dado = pd.DataFrame([{
+            "Login": novo_login,
+            "Senha": nova_senha,
+            "Meta": nova_meta,
+            "Nome": novo_nome
+        }])
+        
+        # Concatena com os dados existentes
+        df_atualizado = pd.concat([df_antigo, novo_dado], ignore_index=True)
+        
+        # Atualiza a planilha na nuvem
+        conn.update(data=df_atualizado)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar no Google Sheets: {e}")
+        return False
+
+# Função para atualizar usuário existente (ex: mudar senha ou meta)
+def update_user_in_sheets(conn, df_atual, login, campo, novo_valor):
+    try:
+        # Localiza o índice onde o Login bate
+        idx = df_atual.index[df_atual['Login'] == login].tolist()
+        
+        if not idx:
+            return False
+            
+        # Atualiza o valor no DataFrame local
+        df_atual.at[idx[0], campo] = novo_valor
+        
+        # Envia a tabela atualizada para a nuvem
+        conn.update(data=df_atual)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao atualizar dados: {e}")
+        return False
+
+# Função para excluir usuário
+def delete_user_from_sheets(conn, df_atual, login):
+    try:
+        # Filtra removendo o usuário
+        df_novo = df_atual[df_atual['Login'] != login]
+        
+        # Atualiza na nuvem
+        conn.update(data=df_novo)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao excluir usuário: {e}")
+        return False
+
+
+# --- INICIALIZAÇÃO DA CONEXÃO ---
+# Conecta ao Google Sheets usando as credenciais do secrets.toml
+conn_sheets = st.connection("gsheets", type=GSheetsConnection)
+
+# Carrega os usuários no início
+usuarios_dict, df_usuarios_raw = get_users_from_sheets(conn_sheets)
+
+# Meta Geral da Empresa (ainda pode ficar local ou ir para uma aba separada da planilha)
+# Para simplificar, vou manter fixo aqui ou usar um valor padrão, já que o foco é o login.
+META_GERAL_EMPRESA = 100000.0
+
 
 # --- CÁLCULO DE DIAS ÚTEIS ---
 def calcular_dias_uteis_restantes_mes():
@@ -79,9 +169,9 @@ def barra_progresso_linda(atual, meta, titulo="Progresso"):
     st.markdown(html, unsafe_allow_html=True)
 
 # ==============================================================================
-# 📥 CARGA DE DADOS
+# 📥 CARGA DE DADOS (CSV de Vendas)
 # ==============================================================================
-def carregar_dados():
+def carregar_dados_vendas():
     if not os.path.exists(ARQUIVO_DADOS): return None, None
     try:
         try: df = pd.read_csv(ARQUIVO_DADOS, sep=";", encoding="utf-8", on_bad_lines='skip', dtype={'NF': str})
@@ -113,7 +203,10 @@ def carregar_dados():
 # 🔐 BARRA LATERAL (LOGIN, CADASTRO E GERENCIAMENTO)
 # ==============================================================================
 if os.path.exists(ARQUIVO_LOGO):
-    st.sidebar.image(ARQUIVO_LOGO, use_container_width=True)
+    # Usa a função segura para evitar o erro de bomba de descompressão
+    img_logo = carregar_imagem_segura(ARQUIVO_LOGO)
+    if img_logo:
+        st.sidebar.image(img_logo, use_container_width=True)
 else:
     st.sidebar.title("MIC")
 
@@ -125,59 +218,76 @@ if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] 
 if st.session_state['usuario_logado'] is None:
     # --- ÁREA DESLOGADA ---
     tab_login, tab_cadastro = st.sidebar.tabs(["Entrar", "Cadastrar"])
+    
     with tab_login:
         u_in = st.text_input("Usuário")
         p_in = st.text_input("Senha", type="password")
         if st.button("Entrar"):
-            if u_in in config['usuarios'] and config['usuarios'][u_in]['senha'] == p_in:
+            # Recarrega usuários para garantir dados frescos
+            usuarios_dict, df_usuarios_raw = get_users_from_sheets(conn_sheets)
+            
+            if u_in in usuarios_dict and str(usuarios_dict[u_in]['senha']) == p_in:
                 st.session_state['usuario_logado'] = u_in
                 st.rerun()
-            else: st.error("Erro no login")
+            else:
+                st.error("Usuário ou senha incorretos.")
+                
     with tab_cadastro:
         new_user = st.text_input("Novo Usuário (Login)")
         new_pass = st.text_input("Nova Senha", type="password")
         new_name = st.text_input("Nome Completo")
         new_meta = st.number_input("Meta Inicial", value=10000.0)
+        
         if st.button("Criar Vendedor"):
             if new_user and new_pass:
-                if new_user not in config['usuarios']:
-                    config['usuarios'][new_user] = {"senha": new_pass, "meta": new_meta, "nome": new_name}
-                    salvar_config(config)
-                    st.success("Cadastrado!")
-                else: st.error("Já existe.")
+                # Recarrega para checar se já existe
+                usuarios_dict, df_usuarios_raw = get_users_from_sheets(conn_sheets)
+                
+                if new_user not in usuarios_dict:
+                    sucesso = save_user_to_sheets(conn_sheets, df_usuarios_raw, new_user, new_pass, new_meta, new_name)
+                    if sucesso:
+                        st.success("Cadastrado com sucesso! Faça login.")
+                    else:
+                        st.error("Erro ao salvar no banco.")
+                else:
+                    st.error("Usuário já existe.")
+            else:
+                st.warning("Preencha todos os campos.")
 else:
     # --- ÁREA LOGADA ---
     uid = st.session_state['usuario_logado']
     
-    # Verifica se usuário ainda existe (caso tenha sido excluído)
-    if uid in config['usuarios']:
-        u_data = config['usuarios'][uid]
+    # Verifica se usuário ainda existe
+    if uid in usuarios_dict:
+        u_data = usuarios_dict[uid]
         st.sidebar.success(f"Olá, {u_data['nome']}")
         
         # 1. METAS
         with st.sidebar.expander("🎯 Metas"):
             nm = st.number_input("Minha Meta (R$)", value=float(u_data['meta']))
-            if st.button("Salvar Individual"):
-                config['usuarios'][uid]['meta'] = nm
-                salvar_config(config)
-                st.rerun()
+            if st.button("Salvar Meta Individual"):
+                sucesso = update_user_in_sheets(conn_sheets, df_usuarios_raw, uid, 'Meta', nm)
+                if sucesso:
+                    st.success("Meta atualizada!")
+                    st.rerun()
+            
             st.markdown("---")
-            ng = st.number_input("Meta MIC (R$)", value=float(config['meta_geral']))
-            if st.button("Salvar Geral"):
-                config['meta_geral'] = ng
-                salvar_config(config)
-                st.rerun()
+            # Meta Geral (Simulada ou fixa por enquanto, já que não está na tabela de usuários)
+            st.info(f"Meta Geral da Empresa: R$ {META_GERAL_EMPRESA:,.2f}")
 
-        # 2. GERENCIAR CONTA (NOVO!)
+        # 2. GERENCIAR CONTA
         with st.sidebar.expander("⚙️ Gerenciar Conta"):
             st.markdown("**Alterar Senha**")
             senha_antiga = st.text_input("Senha Atual", type="password", key="p1")
             senha_nova = st.text_input("Nova Senha", type="password", key="p2")
+            
             if st.button("Atualizar Senha"):
                 if senha_antiga == u_data['senha']:
-                    config['usuarios'][uid]['senha'] = senha_nova
-                    salvar_config(config)
-                    st.success("Senha alterada!")
+                    sucesso = update_user_in_sheets(conn_sheets, df_usuarios_raw, uid, 'Senha', senha_nova)
+                    if sucesso:
+                        st.success("Senha atualizada!")
+                    else:
+                        st.error("Erro ao atualizar.")
                 else:
                     st.error("Senha atual incorreta!")
             
@@ -185,10 +295,12 @@ else:
             st.markdown("**Zona de Perigo**")
             confirmar_exclusao = st.checkbox("Quero excluir minha conta")
             if st.button("🗑️ Excluir Conta", disabled=not confirmar_exclusao):
-                del config['usuarios'][uid]
-                salvar_config(config)
-                st.session_state['usuario_logado'] = None
-                st.rerun()
+                sucesso = delete_user_from_sheets(conn_sheets, df_usuarios_raw, uid)
+                if sucesso:
+                    st.session_state['usuario_logado'] = None
+                    st.rerun()
+                else:
+                    st.error("Erro ao excluir.")
 
         # 3. LOGOUT
         if st.sidebar.button("Sair"):
@@ -203,7 +315,7 @@ else:
 # ==============================================================================
 st.title("🚀 Painel de Controle de Vendas")
 
-df, col_vend_nome = carregar_dados()
+df, col_vend_nome = carregar_dados_vendas()
 
 if df is not None:
     # --- FILTROS ---
@@ -228,10 +340,10 @@ if df is not None:
 
     st.divider()
 
-    # --- META MIC ---
+    # --- META MIC (GERAL) ---
     st.markdown("## 🏢 META MIC")
     tot_geral = df_filt['valor_final'].sum()
-    meta_emp = config['meta_geral']
+    meta_emp = META_GERAL_EMPRESA
     falta_emp = max(0, meta_emp - tot_geral)
     
     barra_progresso_linda(tot_geral, meta_emp, titulo="Progresso Geral")
@@ -249,56 +361,68 @@ if df is not None:
 
     k3.metric("Falta Vender", f"R$ {falta_emp:,.2f}")
 
-    # --- PERFORMANCE, ---
+    # --- PERFORMANCE INDIVIDUAL ---
     if st.session_state['usuario_logado']:
         st.divider()
-        u_logado = config['usuarios'][st.session_state['usuario_logado']]
-        st.markdown(f"### 👤 PERFORMANCE: {u_logado['nome']}")
-        
-        nome_busca = st.text_input("Filtrar nome (apague se não aparecer nada):", value=u_logado['nome'].split()[0])
-        
-        if col_vend_nome:
-            df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
-            
-            tot_u = df_user['valor_final'].sum()
-            meta_u = float(u_logado['meta'])
-            falta_u = max(0, meta_u - tot_u)
-            
-            if dias_uteis_restantes > 0 and falta_u > 0:
-                diaria_u = falta_u / dias_uteis_restantes
-            elif falta_u > 0:
-                diaria_u = falta_u
-            else:
-                diaria_u = 0
+        # Busca dados atualizados do usuário logado
+        if st.session_state['usuario_logado'] in usuarios_dict:
+             u_logado = usuarios_dict[st.session_state['usuario_logado']]
+             st.markdown(f"### 👤 PERFORMANCE: {u_logado['nome']}")
+             
+             # Tenta filtrar pelo nome do usuário automaticamente
+             nome_busca = st.text_input("Filtrar nome (apague se não aparecer nada):", value=u_logado['nome'].split()[0])
+             
+             if col_vend_nome:
+                 df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
+                 
+                 tot_u = df_user['valor_final'].sum()
+                 meta_u = float(u_logado['meta'])
+                 falta_u = max(0, meta_u - tot_u)
+                 
+                 if dias_uteis_restantes > 0 and falta_u > 0:
+                     diaria_u = falta_u / dias_uteis_restantes
+                 elif falta_u > 0:
+                     diaria_u = falta_u
+                 else:
+                     diaria_u = 0
 
-            ku1, ku2, ku3, ku4 = st.columns(4)
-            ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
-            ku2.metric("Minha Meta", f"R$ {meta_u:,.2f}")
-            ku3.metric("Falta", f"R$ {falta_u:,.2f}")
-            
-            if diaria_u > 0:
-                ku4.metric("Meta Diária (Restante)", f"R$ {diaria_u:,.2f}", delta=f"{dias_uteis_restantes} dias úteis")
-            else:
-                ku4.metric("Status", "Meta Batida! 🎉" if falta_u == 0 else "Mês Fechado")
+                 ku1, ku2, ku3, ku4 = st.columns(4)
+                 ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
+                 ku2.metric("Minha Meta", f"R$ {meta_u:,.2f}")
+                 ku3.metric("Falta", f"R$ {falta_u:,.2f}")
+                 
+                 if diaria_u > 0:
+                     ku4.metric("Meta Diária (Restante)", f"R$ {diaria_u:,.2f}", delta=f"{dias_uteis_restantes} dias úteis")
+                 else:
+                     ku4.metric("Status", "Meta Batida! 🎉" if falta_u == 0 else "Mês Fechado")
 
-            barra_progresso_linda(tot_u, meta_u, titulo="Meu Progresso")
+                 barra_progresso_linda(tot_u, meta_u, titulo="Meu Progresso")
 
-            with st.expander("Ver meus pedidos detalhados"):
-                st.dataframe(df_user[['data_final', 'Cliente', 'valor_final', 'status_ped']].sort_values('data_final', ascending=False))
+                 with st.expander("Ver meus pedidos detalhados"):
+                     if 'Cliente' in df_user.columns:
+                        st.dataframe(df_user[['data_final', 'Cliente', 'valor_final', 'status_ped']].sort_values('data_final', ascending=False))
+                     else:
+                        st.dataframe(df_user[['data_final', 'valor_final', 'status_ped']].sort_values('data_final', ascending=False))
+
+             else:
+                 st.warning("Coluna de vendedor não encontrada no arquivo CSV.")
         else:
-            st.warning("Coluna de vendedor não encontrada.")
+            st.error("Usuário logado não encontrado na base.")
 
     # --- RANKING ---
     st.divider()
     g1, g2 = st.columns(2)
     if col_vend_nome:
+        # Top 10 Vendedores
         rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
         fig_r = px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', title="🏆 Top Vendedores", text_auto=True)
         fig_r.update_layout(yaxis=dict(autorange="reversed"))
         g1.plotly_chart(fig_r, use_container_width=True)
     
+    # Evolução de Vendas
     evol = df_filt.groupby('data_final')['valor_final'].sum().reset_index()
     fig_l = px.line(evol, x='data_final', y='valor_final', markers=True, title="📈 Evolução Diária")
     g2.plotly_chart(fig_l, use_container_width=True)
+
 else:
     st.error(f"Arquivo '{ARQUIVO_DADOS}' não encontrado.")
