@@ -643,3 +643,5 @@ else:
                 
     else:
         st.error(f"Arquivo '{ARQUIVO_DADOS}' não encontrado.")
+
+        #Agora tá show!
