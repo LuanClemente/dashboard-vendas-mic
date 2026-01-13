@@ -8,16 +8,15 @@ from datetime import datetime, date, timedelta
 import calendar
 import numpy as np
 from PIL import Image 
-import pytz # Para fuso horário correto
+import pytz 
+import time
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÕES INICIAIS
 # ==============================================================================
 st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
 
-ARQUIVO_DADOS = "lista.csv" 
 ARQUIVO_LOGO = "logo.png"
-# Fuso Horário de SP
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
 
 # URL DA PLANILHA MESTRA
@@ -63,7 +62,6 @@ def inicializar_e_carregar_usuarios():
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         
-        # Garante colunas
         changed = False
         for c in colunas_necessarias:
             if c not in df.columns:
@@ -132,36 +130,31 @@ def excluir_usuario(login):
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
-    # Colunas esperadas na aba Expedicao (Adicionei Users e Log)
     cols_exp = ['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 
                 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado',
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
-        # Se faltar coluna, cria vazio pra evitar erro
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
         else:
-            # Garante que todas as colunas existem
             for c in cols_exp:
                 if c not in df_exp.columns: df_exp[c] = ""
     except:
         df_exp = pd.DataFrame(columns=cols_exp)
 
-    # --- SINCRONIZAÇÃO E AUTO-FATURAMENTO ---
+    # SINCRONIZAÇÃO
     if df_vendas_atual is not None and not df_vendas_atual.empty:
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         df_vendas_atual[col_pedido_vendas] = df_vendas_atual[col_pedido_vendas].astype(str).str.split('.').str[0].str.strip()
         
-        # 1. Identifica Novos Pedidos
         pedidos_exp = set(df_exp['Pedido'].unique())
         pedidos_vendas = set(df_vendas_atual[col_pedido_vendas].unique())
         novos = [p for p in (pedidos_vendas - pedidos_exp) if p and p.lower() != 'nan']
         
         mudou_algo = False
         
-        # Adiciona Novos
         if novos:
             novos_dados = []
             agora = get_data_hora_sp()
@@ -171,7 +164,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
             for p in novos:
                 row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
                 
-                # Checa se já tem NF na venda (Auto-Faturamento no Nascimento)
                 tem_nf = False
                 if col_nf_vendas:
                     nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
@@ -197,17 +189,13 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 df_exp = pd.concat([df_exp, pd.DataFrame(novos_dados)], ignore_index=True)
                 mudou_algo = True
 
-        # 2. Verifica Pedidos Existentes que ganharam NF (Auto-Update)
         if col_nf_vendas:
-            # Filtra vendas que tem NF
             vendas_com_nf = df_vendas_atual[df_vendas_atual[col_nf_vendas].notna() & (df_vendas_atual[col_nf_vendas].astype(str).str.strip() != '')]
             lista_pedidos_com_nf = set(vendas_com_nf[col_pedido_vendas].unique())
             
-            # Itera sobre a expedição para atualizar quem está atrasado
             for i, row in df_exp.iterrows():
                 ped = row['Pedido']
                 status = row['Status_Atual']
-                # Se tem NF mas o status é anterior a Faturado
                 if ped in lista_pedidos_com_nf and status in ['Emitido', 'Em Separação', 'Separado']:
                     agora = get_data_hora_sp()
                     df_exp.at[i, 'Status_Atual'] = 'Faturado'
@@ -231,13 +219,14 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             i = idx[0]
             agora = get_data_hora_sp()
             
-            # Atualiza Status e Data
             df_exp.at[i, 'Status_Atual'] = novo_status
             if coluna_data: df_exp.at[i, coluna_data] = agora
             if coluna_user: df_exp.at[i, coluna_user] = usuario_nome
             
-            # Log
+            # Correção do Erro de Log: Força conversão para string
             log_antigo = str(df_exp.at[i, 'Log_Historico']) if pd.notnull(df_exp.at[i, 'Log_Historico']) else ""
+            if log_antigo == "nan": log_antigo = ""
+            
             novo_log = f" | [{agora} - {usuario_nome}] {log_msg}"
             df_exp.at[i, 'Log_Historico'] = log_antigo + novo_log
             
@@ -253,7 +242,6 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 # ==============================================================================
 def carregar_dados_vendas():
     try:
-        # Pega planilha 1 (Vendas)
         df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
         if df.empty: return None, None, [], None, None
 
@@ -327,8 +315,6 @@ def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
 
 def render_bolinhas_status(status):
-    # Emitido (Azul), Separação (Laranja), Separado (Roxo), Faturado (Teal), Enviado (Verde)
-    # Estados: 0=Vazio, 1=Cheio
     mapa = {
         'Emitido':      ['🔵','⚪','⚪','⚪','⚪'],
         'Em Separação': ['🔵','🟠','⚪','⚪','⚪'],
@@ -344,7 +330,7 @@ def render_bolinhas_status(status):
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
-    # Layout Configurado pelo Usuário (Restaurado)
+    # Layout Configurado
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
@@ -387,7 +373,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     dias_uteis = calcular_dias_uteis_restantes_mes()
     dias_passados = calcular_dias_uteis_passados()
 
-    # --- FUNÇÕES DE RENDERIZAÇÃO DOS CARDS ---
     def render_meta_mic():
         st.markdown("### 🏢 Meta MIC (Empresa)")
         tot = df_filt['valor_final'].sum()
@@ -435,7 +420,8 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
-                top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+                # Ordena Desc, pega Top 10, depois Asc para o gráfico plotar o maior no topo
+                top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
                 st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
@@ -465,21 +451,23 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
             ku2.metric("Falta", f"R$ {falta_u:,.2f}")
             barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
-            st.session_state['df_user_cache'] = df_user # Cache pro proximo
+            st.session_state['df_user_cache'] = df_user 
             st.divider()
 
     def render_meus_top10():
         if 'df_user_cache' in st.session_state and not st.session_state['df_user_cache'].empty:
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
-            top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+            # Ordenação Visual Correta (Maior no topo)
+            top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
             st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
     def render_ranking():
         if col_vend_nome:
             st.markdown("### 🏆 Ranking Geral")
-            rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+            # Ordenação Visual Correta (Maior no topo)
+            rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
             st.plotly_chart(px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
@@ -489,7 +477,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         st.plotly_chart(px.line(evol, x='data_final', y='valor_final', markers=True), use_container_width=True)
         st.divider()
 
-    # Mapa de Renderização
     mapa = {
         "Meta MIC (Empresa)": render_meta_mic,
         "Supervisão (Reps)": render_supervisao,
@@ -501,18 +488,16 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         "Evolução Diária": render_evolucao
     }
 
-    # Renderiza na Ordem
     for item in layout_user:
         if item in mapa: mapa[item]()
 
 def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas):
     st.markdown("## 📦 Controle de Expedição")
     
-    # Permissões
     pode_separar = user_role in ['Expedicao', 'ADM']
     pode_faturar = user_role in ['Vendedor', 'Expedicao', 'ADM']
     pode_enviar = user_role in ['Expedicao', 'ADM']
-    pode_voltar = user_role in ['ADM', 'Expedicao'] # Permite voltar status
+    pode_voltar = user_role in ['ADM', 'Expedicao'] 
 
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
@@ -521,7 +506,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
     filtro_status = c_f2.selectbox("Filtrar Status", ["Todos", "Emitidos", "Separando", "Faturados", "Enviados"])
     
-    # Lógica de Filtro Único
     mask_status = [True] * len(df_exp)
     if filtro_status == "Emitidos": mask_status = df_exp['Status_Atual'] == "Emitido"
     elif filtro_status == "Separando": mask_status = df_exp['Status_Atual'].isin(["Em Separação", "Separado"])
@@ -538,7 +522,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             df_view['Vendedor'].str.lower().str.contains(t)
         ]
     
-    df_view = df_view.iloc[::-1] # Recentes primeiro
+    df_view = df_view.iloc[::-1]
 
     st.divider()
     
@@ -556,7 +540,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                 st.markdown(f"**{row['Cliente']}**")
                 st.write(f"{bolinhas} **{status}**")
             with c3:
-                # Mostra o log simplificado (última ação)
                 txt_time = ""
                 if row['Data_Emitido']: txt_time += f"📅 Emit: {row['Data_Emitido']}\n"
                 if row['Data_Separado']: txt_time += f"📦 Sep: {row['Data_Separado']} ({row['User_Separado']})\n"
@@ -564,11 +547,13 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                 if row['Data_Enviado']: txt_time += f"🚚 Env: {row['Data_Enviado']} ({row['User_Enviado']})"
                 st.caption(txt_time)
                 
-                with st.popover("📜 Ver Histórico Completo"):
-                    st.text(row['Log_Historico'].replace(" | ", "\n"))
+                # Correção do Log (Converte para string segura antes do replace)
+                log_txt = str(row['Log_Historico']) if pd.notnull(row['Log_Historico']) else ""
+                if log_txt:
+                    with st.popover("📜 Ver Histórico"):
+                        st.text(log_txt.replace(" | ", "\n"))
 
             with c4:
-                # Botões de Ação
                 if status == "Emitido":
                     if pode_separar:
                         if st.button("▶️ Separar", key=f"s1_{ped}"):
