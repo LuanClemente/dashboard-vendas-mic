@@ -18,6 +18,10 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 ARQUIVO_DADOS = "lista.csv" 
 ARQUIVO_LOGO = "logo.png"
 
+# LINK DA PLANILHA MESTRA (Vendas + Expedição)
+# Centralizei aqui para garantir que todas as funções usem o mesmo arquivo
+URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
+
 # CSS para visual limpo e ajustes
 st.markdown("""
     <style>
@@ -26,7 +30,6 @@ st.markdown("""
         [data-testid="stSidebar"] {display: none;}
         .stApp {margin-top: -50px;}
         div[data-testid="column"] {background-color: transparent;}
-        /* Destaque para cards da expedição */
         div[data-testid="stVerticalBlock"] > div {
             border-radius: 10px;
         }
@@ -42,7 +45,7 @@ def carregar_imagem_segura(caminho_imagem):
         return None
 
 # ==============================================================================
-# ☁️ BANCO DE DADOS (CONEXÃO ÚNICA)
+# ☁️ BANCO DE DADOS
 # ==============================================================================
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -55,10 +58,10 @@ def limpar_dado(dado):
     return texto
 
 # --- GESTÃO DE USUÁRIOS ---
+# (Mantive a leitura padrão do secrets para usuários, se quiser mudar para URL avise)
 def inicializar_e_carregar_usuarios():
     try:
-        # Lê a planilha de usuários (assumindo que é a primeira aba padrão do secrets)
-        df = conn.read(ttl=0)
+        df = conn.read(ttl=0) # Lê do secrets.toml
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         
         if df.empty:
@@ -78,9 +81,10 @@ def inicializar_e_carregar_usuarios():
         
         return df
     except Exception as e:
+        # Fallback para não quebrar no primeiro load
         return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"])
 
-# Carrega Usuários e Cargos
+# Carrega Usuários
 df_usuarios = inicializar_e_carregar_usuarios()
 META_GERAL_EMPRESA = 100000.0
 usuarios_dict = {}
@@ -103,12 +107,12 @@ if not df_usuarios.empty:
                 "senha": limpar_dado(row["Senha"]),
                 "meta": float(row["Meta"]) if pd.notnull(row["Meta"]) else 0.0,
                 "nome": str(row["Nome"]),
-                "cargo": limpar_dado(row.get("Cargo", "Vendedor")), # Default Vendedor
+                "cargo": limpar_dado(row.get("Cargo", "Vendedor")),
                 "metas_reps": metas_reps_dict, 
                 "layout": str(row.get("Config_Layout", ""))
             }
 
-# --- FUNÇÕES DE ATUALIZAÇÃO DE USUÁRIO ---
+# --- FUNÇÕES DE ATUALIZAÇÃO ---
 def salvar_novo_usuario(login, senha, meta, nome):
     try:
         if login == "__GLOBAL__": return False
@@ -146,33 +150,30 @@ def excluir_usuario(login):
     except: return False
 
 # ==============================================================================
-# 📦 LÓGICA DA EXPEDIÇÃO (WMS)
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS) - FIX: USA URL EXPLÍCITA
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
-    # Carrega a aba Expedicao
+    # Carrega a aba Expedicao DA PLANILHA MESTRA
     try:
-        df_exp = conn.read(worksheet="Expedicao", ttl=0)
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         colunas_exp = ['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado']
         
-        # Se vazia ou colunas erradas, recria
         if df_exp.empty or not set(['Pedido', 'Status_Atual']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=colunas_exp)
     except:
+        # Se der erro (aba não existe), cria dataframe vazio
         df_exp = pd.DataFrame(columns=['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado'])
 
-    # Sincronização: Pega pedidos novos das vendas e joga na expedição
+    # Sincronização
     if df_vendas_atual is not None and not df_vendas_atual.empty:
-        # Garante string
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         pedidos_exp = set(df_exp['Pedido'].unique())
         
-        # Prepara dados de vendas
         df_vendas_atual[col_pedido_vendas] = df_vendas_atual[col_pedido_vendas].astype(str).str.split('.').str[0].str.strip()
         pedidos_vendas = set(df_vendas_atual[col_pedido_vendas].unique())
         
         novos = pedidos_vendas - pedidos_exp
-        # Remove nulos ou vazios
         novos = [p for p in novos if p and p.lower() != 'nan' and p != '']
         
         if novos:
@@ -182,6 +183,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
             col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
             
             for p in novos:
+                # Pega dados da venda original
                 row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
                 novos_dados.append({
                     'Pedido': str(p),
@@ -195,13 +197,15 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
             if novos_dados:
                 df_novo = pd.DataFrame(novos_dados)
                 df_exp = pd.concat([df_exp, df_novo], ignore_index=True)
-                conn.update(worksheet="Expedicao", data=df_exp)
+                # FIX: Salva na planilha certa
+                conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp)
     
     return df_exp
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data):
     try:
-        df_exp = conn.read(worksheet="Expedicao", ttl=0)
+        # FIX: Lê e atualiza na planilha certa
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
         
@@ -210,7 +214,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data):
             agora = datetime.now().strftime("%d/%m/%Y %H:%M")
             df_exp.at[i, 'Status_Atual'] = novo_status
             df_exp.at[i, coluna_data] = agora
-            conn.update(worksheet="Expedicao", data=df_exp)
+            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp)
             return True
         return False
     except Exception as e:
@@ -218,12 +222,12 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data):
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS VENDAS (LEITURA)
+# 📥 CARGA DE DADOS VENDAS
 # ==============================================================================
 def carregar_dados_vendas():
-    URL_PLANILHA_VENDAS = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
     try:
-        df = conn.read(spreadsheet=URL_PLANILHA_VENDAS, ttl=0)
+        # Usa a URL Mestra definida no topo
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0)
         if df.empty: return None, None, []
 
         df.columns = [c.strip() for c in df.columns]
@@ -256,7 +260,7 @@ def carregar_dados_vendas():
 
         lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
 
-        return df, col_vend, lista_reps, col_pedido # Retorna col_pedido tb
+        return df, col_vend, lista_reps, col_pedido 
 
     except Exception as e:
         print(f"Erro vendas: {e}") 
@@ -308,11 +312,10 @@ def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
 
 # ==============================================================================
-# 🎨 FUNÇÕES DE RENDERIZAÇÃO DE TELA
+# 🎨 RENDERIZAÇÃO
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
-    # --- ÁREA DE GESTÃO DE REPRESENTANTES ---
     with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
         c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
         metas_reps = u_data['metas_reps']
@@ -336,7 +339,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
 
     st.divider()
     
-    # Filtros e Cálculos
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
     hoje = date.today()
@@ -352,41 +354,70 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     dias_uteis = calcular_dias_uteis_restantes_mes()
     dias_passados = calcular_dias_uteis_passados()
 
-    # Layout Dinâmico
-    def render_meta_mic_card():
-        st.markdown("### 🏢 Meta MIC (Empresa)")
-        tot = df_filt['valor_final'].sum()
-        falta = max(0, META_GERAL_EMPRESA - tot)
-        ticket = tot / df_filt['id_pedido'].nunique() if df_filt['id_pedido'].nunique() > 0 else 0
-        media_nec = falta / dias_uteis if dias_uteis > 0 else 0
-        media_atual = tot / dias_passados if dias_passados > 0 else 0
-        delta = media_atual - media_nec
-        barra_progresso_linda(tot, META_GERAL_EMPRESA, "Progresso Geral")
-        if falta == 0: st.balloons()
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Vendas", f"R$ {tot:,.2f}")
-        k2.metric("Diária Nec.", f"R$ {media_nec:,.2f}", delta=f"{delta:,.2f}")
-        k3.metric("Falta", f"R$ {falta:,.2f}")
-        k4.metric("Ticket Médio", f"R$ {ticket:,.2f}")
-        st.divider()
+    # --- RENDERIZAÇÃO DOS CARDS ---
+    st.markdown("### 🏢 Meta MIC (Empresa)")
+    tot = df_filt['valor_final'].sum()
+    falta = max(0, META_GERAL_EMPRESA - tot)
+    ticket = tot / df_filt['id_pedido'].nunique() if df_filt['id_pedido'].nunique() > 0 else 0
+    media_nec = falta / dias_uteis if dias_uteis > 0 else 0
+    media_atual = tot / dias_passados if dias_passados > 0 else 0
+    delta = media_atual - media_nec
+    barra_progresso_linda(tot, META_GERAL_EMPRESA, "Progresso Geral")
+    if falta == 0: st.balloons()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Vendas", f"R$ {tot:,.2f}")
+    k2.metric("Diária Nec.", f"R$ {media_nec:,.2f}", delta=f"{delta:,.2f}")
+    k3.metric("Falta", f"R$ {falta:,.2f}")
+    k4.metric("Ticket Médio", f"R$ {ticket:,.2f}")
+    st.divider()
 
-    # (Aqui entra o restante das funções de renderização que já tínhamos, adaptadas para receber o contexto)
-    # Para economizar espaço na resposta, vou usar a mesma lógica do código anterior, mas dentro dessa função
-    
-    # ... Inserir aqui as funções render_supervisao, render_top10, etc. (Simplificado para caber) ...
-    # Mas o mais importante é que essa função render_dashboard_vendas contém TODO o dashboard antigo.
-    
-    render_meta_mic_card()
-    
-    # Exemplo simplificado de renderização dos demais itens para não estourar o limite de caracteres
-    # Na prática você copia as funções 'render_supervisao', 'render_individual' etc do código v7.0 para cá.
-    
-    st.info("💡 Dica: Use o menu de configurações para personalizar a ordem dos gráficos.")
+    if metas_reps:
+        st.markdown("### 🤝 Supervisão de Representantes")
+        abas = st.tabs(list(metas_reps.keys()))
+        for i, (rep_nome, rep_meta) in enumerate(metas_reps.items()):
+            with abas[i]:
+                df_rep = df_filt[df_filt['Representante'] == rep_nome]
+                tot_rep = df_rep['valor_final'].sum()
+                falta_rep = max(0, rep_meta - tot_rep)
+                pedidos_rep = df_rep['id_pedido'].nunique()
+                ticket_rep = tot_rep / pedidos_rep if pedidos_rep > 0 else 0
+                media_diaria_rep = tot_rep / dias_passados if dias_passados > 0 else 0
+                media_nec_rep = falta_rep / dias_uteis if dias_uteis > 0 else 0
+                delta_rep = media_diaria_rep - media_nec_rep
+                
+                st.caption(f"Meta: R$ {rep_meta:,.2f}")
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("Vendas", f"R$ {tot_rep:,.2f}")
+                r2.metric("Falta", f"R$ {falta_rep:,.2f}")
+                r3.metric("Diária Nec.", f"R$ {media_nec_rep:,.2f}", delta=f"{delta_rep:,.2f}")
+                r4.metric("Ticket", f"R$ {ticket_rep:,.2f}")
+                barra_progresso_linda(tot_rep, rep_meta, rep_nome)
+                
+                st.write("**Top 10 Clientes (Rep):**")
+                if not df_rep.empty:
+                    top_10 = df_rep.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+                    st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
+
+    st.divider()
+    st.markdown(f"### 👤 Performance Individual: {u_data['nome']}")
+    if col_vend_nome:
+        nome_busca = st.text_input("Filtrar meu nome:", value=u_data['nome'].split()[0])
+        df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
+        tot_u = df_user['valor_final'].sum()
+        meta_u = float(u_data['meta'])
+        falta_u = max(0, meta_u - tot_u)
+        
+        ku1, ku2 = st.columns(2)
+        ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
+        ku2.metric("Falta", f"R$ {falta_u:,.2f}")
+        barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
+        
+        with st.expander("Meus Clientes"):
+            st.dataframe(df_user[['data_final', 'Cliente', 'valor_final', 'status_ped']].sort_values('data_final', ascending=False), use_container_width=True)
 
 def render_expedicao(user_role, df_vendas, col_ped_vendas):
     st.markdown("## 📦 Controle de Expedição")
     
-    # Permissões
     pode_separar = user_role in ['Expedicao', 'ADM']
     pode_faturar = user_role in ['Vendedor', 'Expedicao', 'ADM']
     pode_enviar = user_role in ['Expedicao', 'ADM']
@@ -394,7 +425,6 @@ def render_expedicao(user_role, df_vendas, col_ped_vendas):
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas)
 
-    # Filtros
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
     status_view = c_f2.multiselect("Status", df_exp['Status_Atual'].unique(), default=df_exp['Status_Atual'].unique())
@@ -408,16 +438,13 @@ def render_expedicao(user_role, df_vendas, col_ped_vendas):
             df_view['Vendedor'].str.lower().str.contains(t)
         ]
     
-    # Ordenar recentes primeiro
-    df_view = df_view.iloc[::-1]
+    df_view = df_view.iloc[::-1] # Recentes primeiro
 
     st.divider()
     
     for i, row in df_view.iterrows():
         status = row['Status_Atual']
         ped = row['Pedido']
-        
-        # Cores
         cor = "gray"
         if status == "Emitido": cor = "blue"
         elif status == "Em Separação": cor = "orange"
@@ -434,49 +461,42 @@ def render_expedicao(user_role, df_vendas, col_ped_vendas):
                 st.markdown(f"**{row['Cliente']}**")
                 st.markdown(f":{cor}[● {status}]")
             with c3:
-                # Timeline compacta
                 txt_time = ""
                 if row['Data_Emitido']: txt_time += f"📅 {row['Data_Emitido']} "
                 if row['Data_Separado']: txt_time += f"📦 {row['Data_Separado']} "
                 if row['Data_Enviado']: txt_time += f"🚚 {row['Data_Enviado']}"
                 st.caption(txt_time)
             with c4:
-                # Ações
                 if status == "Emitido":
                     if pode_separar:
                         if st.button("▶️ Separar", key=f"s1_{ped}"):
                             atualizar_status_expedicao(ped, "Em Separação", "Data_Separacao"); st.rerun()
                     else: st.info("Aguardando Estoque")
-                
                 elif status == "Em Separação":
                     if pode_separar:
                         if st.button("✅ Finalizar", key=f"s2_{ped}"):
                             atualizar_status_expedicao(ped, "Separado", "Data_Separado"); st.rerun()
                     else: st.warning("Em separação...")
-                
                 elif status == "Separado":
                     if pode_faturar:
                         if st.button("💲 Faturar", key=f"s3_{ped}"):
                             atualizar_status_expedicao(ped, "Faturado", "Data_Faturado"); st.rerun()
-                
                 elif status == "Faturado":
                     if pode_enviar:
                         if st.button("🚚 Enviar", key=f"s4_{ped}"):
                             atualizar_status_expedicao(ped, "Enviado", "Data_Enviado"); st.rerun()
                     else: st.success("Pronto p/ Envio")
-                
                 elif status == "Enviado":
                     st.success("Concluído")
             st.markdown("---")
 
 # ==============================================================================
-# 🏁 FLUXO PRINCIPAL (MAIN LOOP)
+# 🏁 FLUXO PRINCIPAL
 # ==============================================================================
 
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 df, col_vend, lista_reps, col_ped = carregar_dados_vendas()
 
-# --- LOGIN ---
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
@@ -485,15 +505,13 @@ if st.session_state['usuario_logado'] is None:
             img = carregar_imagem_segura(ARQUIVO_LOGO)
             if img: st.image(img, use_container_width=True)
         else: st.title("MIC System")
-        
         t1, t2 = st.tabs(["Entrar", "Criar Conta"])
         with t1:
             u = st.text_input("Usuário").strip()
             p = st.text_input("Senha", type="password").strip()
             if st.button("Acessar", use_container_width=True):
                 if u in usuarios_dict and usuarios_dict[u]['senha'] == p:
-                    st.session_state['usuario_logado'] = u
-                    st.rerun()
+                    st.session_state['usuario_logado'] = u; st.rerun()
                 else: st.error("Negado.")
             if st.button("🔄", help="Atualizar"): st.cache_data.clear(); st.rerun()
         with t2:
@@ -506,67 +524,41 @@ if st.session_state['usuario_logado'] is None:
                         if salvar_novo_usuario(nu, np_, 10000.0, nn): st.success("OK! Logue."); 
                     else: st.error("Existe.")
 else:
-    # --- LOGADO ---
     uid = st.session_state['usuario_logado']
     if uid not in usuarios_dict: st.session_state['usuario_logado'] = None; st.rerun()
     u_data = usuarios_dict[uid]
     cargo = u_data['cargo']
 
-    # Header
     h1, h2 = st.columns([6, 1])
     with h1:
         if os.path.exists(ARQUIVO_LOGO):
             img = carregar_imagem_segura(ARQUIVO_LOGO)
             if img: st.image(img, width=120)
         else: st.title("MIC")
-    
     with h2:
         st.write("")
         with st.popover("⚙️", use_container_width=True):
             st.markdown(f"**{u_data['nome']}**")
             st.caption(f"Cargo: {cargo}")
-            
-            # ADM: Gestão de Cargos
             if cargo == "ADM":
                 with st.expander("👑 Admin: Alterar Cargos"):
                     usr_edit = st.selectbox("Usuário:", list(usuarios_dict.keys()))
                     cargo_edit = st.selectbox("Novo Cargo:", ["Vendedor", "Expedicao", "ADM"])
                     if st.button("Alterar Cargo"):
                         if atualizar_campo(usr_edit, "Cargo", cargo_edit): st.success("Atualizado!"); st.rerun()
-            
             st.markdown("---")
-            # Configurações Pessoais
             n_nome = st.text_input("Nome:", value=u_data['nome'])
             if st.button("Salvar Nome"): atualizar_campo(uid, "Nome", n_nome); st.rerun()
-            
             n_senha = st.text_input("Nova Senha", type="password")
             if st.button("Salvar Senha"): atualizar_campo(uid, "Senha", n_senha); st.rerun()
-            
-            # Layout (Apenas se não for Expedição)
-            if cargo != "Expedicao":
-                ops = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Performance Individual", "Evolução"]
-                l_salvo = u_data['layout'].split(',') if u_data['layout'] else ops
-                l_salvo = [x for x in l_salvo if x in ops] or ops
-                novo_l = st.multiselect("Layout:", ops, default=l_salvo)
-                if st.button("Salvar Layout"): atualizar_campo(uid, "Config_Layout", ",".join(novo_l)); st.rerun()
-
             st.markdown("---")
             if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
-    # --- ROTEAMENTO DE TELAS ---
-    
-    # 1. EXPEDIÇÃO (Vê apenas a aba de expedição)
     if cargo == "Expedicao":
         render_expedicao(cargo, df, col_ped)
-        
-    # 2. VENDEDOR e ADM (Veem Abas)
     else:
         tab_vendas, tab_exp = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
-        
         with tab_vendas:
-            # Chama a função de renderização de vendas (simplificada aqui para caber no bloco, 
-            # mas ela usa todas as logicas de graficos do código anterior)
             render_dashboard_vendas(u_data, uid, df, col_vend, lista_reps)
-            
         with tab_exp:
             render_expedicao(cargo, df, col_ped)
