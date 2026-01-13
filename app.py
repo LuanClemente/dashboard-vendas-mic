@@ -18,8 +18,8 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 ARQUIVO_DADOS = "lista.csv" 
 ARQUIVO_LOGO = "logo.png"
 
-# LINK DA PLANILHA MESTRA (Vendas + Expedição)
-# Centralizei aqui para garantir que todas as funções usem o mesmo arquivo
+# LINK DA PLANILHA MESTRA (ONDE ESTÃO AS ABAS 'Página1' (Vendas) e 'Expedicao')
+# IMPORTANTE: O email do robô (secrets) TEM que ser EDITOR desta planilha.
 URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
 # CSS para visual limpo e ajustes
@@ -57,11 +57,10 @@ def limpar_dado(dado):
         texto = texto.replace(".0", "")
     return texto
 
-# --- GESTÃO DE USUÁRIOS ---
-# (Mantive a leitura padrão do secrets para usuários, se quiser mudar para URL avise)
+# --- GESTÃO DE USUÁRIOS (Lê do secrets/planilha padrão) ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=0) # Lê do secrets.toml
+        df = conn.read(ttl=0) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         
         if df.empty:
@@ -81,7 +80,6 @@ def inicializar_e_carregar_usuarios():
         
         return df
     except Exception as e:
-        # Fallback para não quebrar no primeiro load
         return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"])
 
 # Carrega Usuários
@@ -122,6 +120,8 @@ def salvar_novo_usuario(login, senha, meta, nome):
         }])
         df_atual = conn.read(ttl=0)
         df_final = pd.concat([df_atual, novo_dado], ignore_index=True)
+        # Limpeza de NaN antes de salvar
+        df_final = df_final.fillna("")
         conn.update(data=df_final)
         return True
     except: return False
@@ -135,6 +135,8 @@ def atualizar_campo(login, campo, novo_valor):
             idx = indices[0]
             if isinstance(novo_valor, dict): novo_valor = json.dumps(novo_valor)
             df_atual.at[idx, campo] = novo_valor
+            # Limpeza de NaN antes de salvar
+            df_atual = df_atual.fillna("")
             conn.update(data=df_atual)
             return True
         return False
@@ -150,19 +152,18 @@ def excluir_usuario(login):
     except: return False
 
 # ==============================================================================
-# 📦 LÓGICA DA EXPEDIÇÃO (WMS) - FIX: USA URL EXPLÍCITA
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS) - COM CORREÇÃO DE NaN
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
-    # Carrega a aba Expedicao DA PLANILHA MESTRA
     try:
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         colunas_exp = ['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado']
         
+        # Se vazia ou colunas erradas, recria
         if df_exp.empty or not set(['Pedido', 'Status_Atual']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=colunas_exp)
     except:
-        # Se der erro (aba não existe), cria dataframe vazio
         df_exp = pd.DataFrame(columns=['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado'])
 
     # Sincronização
@@ -183,7 +184,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
             col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
             
             for p in novos:
-                # Pega dados da venda original
                 row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
                 novos_dados.append({
                     'Pedido': str(p),
@@ -197,14 +197,16 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas):
             if novos_dados:
                 df_novo = pd.DataFrame(novos_dados)
                 df_exp = pd.concat([df_exp, df_novo], ignore_index=True)
-                # FIX: Salva na planilha certa
+                
+                # --- FIX CRUCIAL: Remove NaN antes de enviar para o Google ---
+                df_exp = df_exp.fillna("") 
+                
                 conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp)
     
     return df_exp
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data):
     try:
-        # FIX: Lê e atualiza na planilha certa
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
@@ -214,6 +216,10 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data):
             agora = datetime.now().strftime("%d/%m/%Y %H:%M")
             df_exp.at[i, 'Status_Atual'] = novo_status
             df_exp.at[i, coluna_data] = agora
+            
+            # --- FIX CRUCIAL: Remove NaN antes de enviar para o Google ---
+            df_exp = df_exp.fillna("")
+            
             conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp)
             return True
         return False
@@ -227,8 +233,10 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data):
 def carregar_dados_vendas():
     try:
         # Usa a URL Mestra definida no topo
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0)
-        if df.empty: return None, None, []
+        # Assumindo que a aba de vendas é a primeira (padrão) ou se chama 'Página1'
+        # Se sua aba de vendas tiver outro nome, ajuste aqui
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
+        if df.empty: return None, None, [], None
 
         df.columns = [c.strip() for c in df.columns]
         cols = df.columns
@@ -241,7 +249,7 @@ def carregar_dados_vendas():
         col_cnpj = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
         col_pedido = next((c for c in cols if 'Pedido' in c), None)
 
-        if not col_valor or not col_data: return None, None, []
+        if not col_valor or not col_data: return None, None, [], None
 
         if df[col_valor].dtype == 'O': 
             df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
@@ -256,7 +264,12 @@ def carregar_dados_vendas():
             
         if col_cnpj: df[col_cnpj] = df[col_cnpj].astype(str)
         if not col_pedido and col_nf: col_pedido = col_nf 
-        df['id_pedido'] = df[col_pedido] if col_pedido else df.index
+        
+        # Garante que id_pedido existe e trata NaN
+        if col_pedido:
+             df['id_pedido'] = df[col_pedido].fillna(0)
+        else:
+             df['id_pedido'] = df.index
 
         lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
 
@@ -316,6 +329,8 @@ def converter_df_para_csv(df):
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
+    # Só mostra gestão de metas se for ADM ou tiver permissão especial, ou deixa aberto para todos (user decision)
+    # Aqui vou deixar visível para todos customizarem suas visões
     with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
         c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
         metas_reps = u_data['metas_reps']
