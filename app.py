@@ -420,8 +420,8 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
-                # Ordena Desc, pega Top 10, depois Asc para o gráfico plotar o maior no topo
-                top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
+                # CORREÇÃO: Reseta índice para virar coluna
+                top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
                 st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
@@ -432,6 +432,7 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
+                # CORREÇÃO: Reset Index já estava, mas garante
                 df_abc = calcular_curva_abc(df_grupo.groupby(['Cliente', 'CNPJ'])['valor_final'].sum().reset_index())
                 if busca:
                     df_abc = df_abc[df_abc['Cliente'].str.contains(busca, case=False)]
@@ -458,16 +459,16 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if 'df_user_cache' in st.session_state and not st.session_state['df_user_cache'].empty:
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
-            # Ordenação Visual Correta (Maior no topo)
-            top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
+            # CORREÇÃO: Reset Index
+            top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
     def render_ranking():
         if col_vend_nome:
             st.markdown("### 🏆 Ranking Geral")
-            # Ordenação Visual Correta (Maior no topo)
-            rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True)
+            # CORREÇÃO: Reset Index
+            rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
