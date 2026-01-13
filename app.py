@@ -19,7 +19,7 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
 
-# URL DA PLANILHA MESTRA
+# URL DA PLANILHA MESTRA (Backend do Código 2 para funcionar WMS)
 URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
 st.markdown("""
@@ -47,7 +47,7 @@ def carregar_imagem_segura(caminho_imagem):
     except: return None
 
 # ==============================================================================
-# ☁️ BANCO DE DADOS
+# ☁️ BANCO DE DADOS (GOOGLE SHEETS - Backend Código 2)
 # ==============================================================================
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -59,7 +59,7 @@ def limpar_dado(dado):
     if pd.isna(dado): return ""
     return str(dado).strip().replace(".0", "")
 
-# --- GESTÃO DE USUÁRIOS ---
+# --- GESTÃO DE USUÁRIOS (Com suporte a Cargo do Código 2) ---
 def inicializar_e_carregar_usuarios():
     try:
         df = conn.read(ttl=0) 
@@ -130,7 +130,7 @@ def excluir_usuario(login):
     except: return False
 
 # ==============================================================================
-# 📦 LÓGICA DA EXPEDIÇÃO (WMS)
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS - Código 2 + Melhorias)
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
@@ -241,7 +241,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS VENDAS
+# 📥 CARGA DE DADOS VENDAS (Google Sheets - Código 2)
 # ==============================================================================
 def carregar_dados_vendas():
     try:
@@ -308,17 +308,40 @@ def calcular_curva_abc(df_input):
     df_abc['Curva'] = df_abc['perc'].apply(lambda p: 'A' if p <= 0.8 else ('B' if p <= 0.95 else 'C'))
     return df_abc
 
+# RESTAURAÇÃO: Estilo do Código 1
 def barra_progresso_linda(atual, meta, titulo="Progresso"):
     pct = (atual / meta * 100) if meta > 0 else 0
     vis = min(pct, 100) 
     grad = "linear-gradient(90deg, #ff4b4b 0%, #ffca28 50%, #21c354 100%)"
-    st.markdown(f"""<div style="margin-bottom: 20px;"><div style="display: flex; justify-content: space-between; align-items: flex-end;"><span style="font-weight: bold; font-size: 1.1rem; color: #444;">{titulo}</span><span style="font-weight: bold; font-size: 1.4rem; color: #333;">{pct:.1f}%</span></div><div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 25px;"><div style="width: {vis}%; background: {grad}; height: 100%; border-radius: 20px; transition: width 1s ease-in-out;"></div></div><div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; margin-top: 5px;"><span>Realizado: R$ {atual:,.2f}</span><span>Meta: R$ {meta:,.2f}</span></div></div>""", unsafe_allow_html=True)
+    
+    html = f"""
+    <div style="margin-bottom: 20px; font-family: sans-serif;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 5px; align-items: flex-end;">
+            <span style="font-weight: bold; font-size: 1.1rem; color: #444;">{titulo}</span>
+            <span style="font-weight: bold; font-size: 1.4rem; color: #333;">{pct:.1f}%</span>
+        </div>
+        <div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);">
+            <div style="width: {vis}%; 
+                        background: {grad}; 
+                        height: 100%; 
+                        border-radius: 20px; 
+                        transition: width 1s ease-in-out;
+                        box-shadow: 2px 0 5px rgba(0,0,0,0.2);">
+            </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; margin-top: 5px;">
+            <span>Realizado: R$ {atual:,.2f}</span>
+            <span>Meta: R$ {meta:,.2f}</span>
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
+# RESTAURAÇÃO: Função de Download do Código 1
 def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
 
 def render_bolinhas_status(status):
-    # Mapa atualizado para os status internos
     mapa = {
         'Emitido':      ['🔵','⚪','⚪','⚪','⚪'],
         'Em Separação': ['🔵','🟠','⚪','⚪','⚪'],
@@ -330,10 +353,11 @@ def render_bolinhas_status(status):
     return " ".join(bolas)
 
 # ==============================================================================
-# 🎨 RENDERIZAÇÃO
+# 🎨 RENDERIZAÇÃO (RESTAURAÇÃO DO VISUAL CÓDIGO 1)
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
+    # RESTAURAÇÃO: Layout do Código 1
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
@@ -364,10 +388,9 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
     
-    # 📆 DATA CORRIGIDA: Padrão DD/MM/AAAA
+    # 📆 DATA CORRIGIDA: Padrão DD/MM/AAAA (Fix Solicitado)
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    # O date_input retorna objeto date, o 'format' ajusta apenas a visualização
     periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY")
     
     df_filt = df.copy()
@@ -379,6 +402,8 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     dias_uteis = calcular_dias_uteis_restantes_mes()
     dias_passados = calcular_dias_uteis_passados()
 
+    # --- RESTAURAÇÃO: Funções de Renderização ricas do Código 1 ---
+
     def render_meta_mic():
         st.markdown("### 🏢 Meta MIC (Empresa)")
         tot = df_filt['valor_final'].sum()
@@ -387,10 +412,11 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         media_nec = falta / dias_uteis if dias_uteis > 0 else 0
         media_atual = tot / dias_passados if dias_passados > 0 else 0
         delta = media_atual - media_nec
+        
         barra_progresso_linda(tot, META_GERAL_EMPRESA, "Progresso Geral")
         if falta == 0: st.balloons()
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Vendas", f"R$ {tot:,.2f}")
+        k1.metric("Vendas Totais", f"R$ {tot:,.2f}")
         k2.metric("Diária Nec.", f"R$ {media_nec:,.2f}", delta=f"{delta:,.2f}")
         k3.metric("Falta", f"R$ {falta:,.2f}")
         k4.metric("Ticket Médio", f"R$ {ticket:,.2f}")
@@ -411,23 +437,31 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
                     media_nec_rep = falta_rep / dias_uteis if dias_uteis > 0 else 0
                     delta_rep = media_diaria_rep - media_nec_rep
                     
-                    st.caption(f"Meta: R$ {rep_meta:,.2f}")
+                    st.caption(f"Meta Definida: R$ {rep_meta:,.2f}")
                     r1, r2, r3, r4 = st.columns(4)
                     r1.metric("Vendas", f"R$ {tot_rep:,.2f}")
                     r2.metric("Falta", f"R$ {falta_rep:,.2f}")
                     r3.metric("Diária Nec.", f"R$ {media_nec_rep:,.2f}", delta=f"{delta_rep:,.2f}")
                     r4.metric("Ticket", f"R$ {ticket_rep:,.2f}")
-                    barra_progresso_linda(tot_rep, rep_meta, rep_nome)
+                    barra_progresso_linda(tot_rep, rep_meta, f"Progresso {rep_nome}")
+                    if falta_rep == 0: st.balloons()
+
+                    # RESTAURAÇÃO: Botão de Download do Código 1
+                    csv = converter_df_para_csv(df_rep)
+                    st.download_button(f"📥 Baixar Relatório de {rep_nome}", csv, f"Relatorio_{rep_nome}.csv", "text/csv")
                     st.divider()
 
     def render_top10_reps():
         if metas_reps:
-            st.write("**Top 10 Clientes (Grupo):**")
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
+                st.markdown("### 🏆 Top 10 Clientes (Supervisão)")
                 top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-                st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
+                # RESTAURAÇÃO: Cores Verdes do Código 1
+                fig = px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
+                fig.update_layout(showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
             st.divider()
 
     def render_lista_clientes_reps():
@@ -464,7 +498,10 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
             top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-            st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
+            # RESTAURAÇÃO: Cores Verdes do Código 1
+            fig = px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
             st.divider()
 
     def render_ranking():
@@ -485,7 +522,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if not evol.empty:
             fig = px.line(evol, x='Data', y='Valor', markers=True, text='Valor')
             fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
-            # Formato brasileiro no eixo X também
             fig.update_layout(xaxis_tickformat='%d/%m')
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -506,6 +542,10 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     for item in layout_user:
         if item in mapa: mapa[item]()
 
+# ==============================================================================
+# 📦 RENDERIZAÇÃO EXPEDIÇÃO (Código 2 + Correções de Status/Data)
+# ==============================================================================
+
 def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas):
     st.markdown("## 📦 Controle de Expedição")
     
@@ -517,21 +557,21 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    # --- FILTRO DE DATA CORRIGIDO ---
+    # --- FILTRO DE DATA CORRIGIDO (Padrão DD/MM/AAAA) ---
     c_date1, c_date2 = st.columns([1, 2])
     with c_date1:
         st.caption("Filtrar por Data de Emissão")
         hoje = date.today()
         # Data padrão: 1º dia do mês até o atual/último
-        data_filtro = st.date_input("Período", [hoje.replace(day=1), hoje], format="DD/MM/YYYY")
+        ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
+        data_filtro = st.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY")
 
     # Filtra DF por Data
     if isinstance(data_filtro, list) and len(data_filtro) == 2:
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
         df_exp = df_exp[(df_exp['dt_obj'] >= data_filtro[0]) & (df_exp['dt_obj'] <= data_filtro[1])]
 
-    # --- KPI: MÉTRICAS DE RESUMO ATUALIZADAS ---
-    # Contagens baseadas nos status internos
+    # --- KPI: MÉTRICAS DE RESUMO ATUALIZADAS (5 Status) ---
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
     qtd_separacao = len(df_exp[df_exp['Status_Atual'] == 'Em Separação'])
     qtd_separados = len(df_exp[df_exp['Status_Atual'] == 'Separado']) # Para Faturar
@@ -662,6 +702,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 df, col_vend, lista_reps, col_ped, col_nf = carregar_dados_vendas()
 
+# --- RESTAURAÇÃO: Tela de Login em Abas do Código 1 ---
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
@@ -702,21 +743,49 @@ else:
         else: st.title("MIC")
     with h2:
         st.write("")
+        # --- RESTAURAÇÃO: Menu de Configurações Completo do Código 1 ---
         with st.popover("⚙️", use_container_width=True):
             st.markdown(f"**{u_data['nome']}**")
             st.caption(f"Cargo: {cargo}")
+            
+            # Edição de Cargo (Só para Admins)
             if cargo == "ADM":
                 with st.expander("👑 Admin: Alterar Cargos"):
                     usr_edit = st.selectbox("Usuário:", list(usuarios_dict.keys()))
                     cargo_edit = st.selectbox("Novo Cargo:", ["Vendedor", "Expedicao", "ADM"])
                     if st.button("Alterar Cargo"):
                         if atualizar_campo(usr_edit, "Cargo", cargo_edit): st.success("Atualizado!"); st.rerun()
+            
             st.markdown("---")
+            
+            # Edição de Nome e Senha
             n_nome = st.text_input("Nome:", value=u_data['nome'])
             if st.button("Salvar Nome"): atualizar_campo(uid, "Nome", n_nome); st.rerun()
             n_senha = st.text_input("Nova Senha", type="password")
             if st.button("Salvar Senha"): atualizar_campo(uid, "Senha", n_senha); st.rerun()
+            
             st.markdown("---")
+
+            # Ordenação de Layout (Código 1)
+            opcoes_layout = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
+            layout_salvo = u_data['layout'].split(',') if u_data['layout'] else opcoes_layout
+            layout_salvo = [l for l in layout_salvo if l in opcoes_layout]
+            if not layout_salvo: layout_salvo = opcoes_layout
+            
+            st.caption("Ordem do Dashboard:")
+            novo_layout = st.multiselect("Layout:", opcoes_layout, default=layout_salvo)
+            if st.button("Salvar Layout"):
+                layout_str = ",".join(novo_layout)
+                if atualizar_campo(uid, "Config_Layout", layout_str): st.success("Salvo!"); st.rerun()
+
+            st.markdown("---")
+            
+            # Zona de Perigo (Código 1)
+            with st.expander("Zona de Perigo"):
+                check_del = st.checkbox("Confirmo exclusão da conta")
+                if st.button("Excluir Conta", type="primary", disabled=not check_del):
+                    if excluir_usuario(uid): st.session_state['usuario_logado'] = None; st.rerun()
+
             if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
     if cargo == "Expedicao":
