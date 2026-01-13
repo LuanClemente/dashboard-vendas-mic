@@ -19,7 +19,7 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
 
-# URL DA PLANILHA MESTRA (Backend do Código 2 para funcionar WMS)
+# URL DA PLANILHA MESTRA
 URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
 st.markdown("""
@@ -47,7 +47,7 @@ def carregar_imagem_segura(caminho_imagem):
     except: return None
 
 # ==============================================================================
-# ☁️ BANCO DE DADOS (GOOGLE SHEETS - Backend Código 2)
+# ☁️ BANCO DE DADOS (GOOGLE SHEETS)
 # ==============================================================================
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -59,10 +59,11 @@ def limpar_dado(dado):
     if pd.isna(dado): return ""
     return str(dado).strip().replace(".0", "")
 
-# --- GESTÃO DE USUÁRIOS (Com suporte a Cargo do Código 2) ---
+# --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=0) 
+        # TTL aumentado levemente para evitar Erro 429 (Quota Exceeded)
+        df = conn.read(ttl=5) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         
@@ -130,7 +131,7 @@ def excluir_usuario(login):
     except: return False
 
 # ==============================================================================
-# 📦 LÓGICA DA EXPEDIÇÃO (WMS - Código 2 + Melhorias)
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS)
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
@@ -139,7 +140,8 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        # TTL aumentado para 5s para evitar bloqueio da API
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=5)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
         else:
@@ -241,11 +243,12 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS VENDAS (Google Sheets - Código 2)
+# 📥 CARGA DE DADOS VENDAS
 # ==============================================================================
 def carregar_dados_vendas():
     try:
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
+        # TTL aumentado para evitar sobrecarga da API
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=5) 
         if df.empty: return None, None, [], None, None
 
         df.columns = [c.strip() for c in df.columns]
@@ -308,7 +311,6 @@ def calcular_curva_abc(df_input):
     df_abc['Curva'] = df_abc['perc'].apply(lambda p: 'A' if p <= 0.8 else ('B' if p <= 0.95 else 'C'))
     return df_abc
 
-# RESTAURAÇÃO: Estilo do Código 1
 def barra_progresso_linda(atual, meta, titulo="Progresso"):
     pct = (atual / meta * 100) if meta > 0 else 0
     vis = min(pct, 100) 
@@ -337,7 +339,6 @@ def barra_progresso_linda(atual, meta, titulo="Progresso"):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-# RESTAURAÇÃO: Função de Download do Código 1
 def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
 
@@ -353,11 +354,15 @@ def render_bolinhas_status(status):
     return " ".join(bolas)
 
 # ==============================================================================
-# 🎨 RENDERIZAÇÃO (RESTAURAÇÃO DO VISUAL CÓDIGO 1)
+# 🎨 RENDERIZAÇÃO
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
-    # RESTAURAÇÃO: Layout do Código 1
+    # CORREÇÃO: Verificação de segurança para evitar erro NoneType
+    if df is None:
+        st.error("Erro ao carregar dados de vendas. Verifique a conexão.")
+        return
+
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
@@ -388,10 +393,11 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
     
-    # 📆 DATA CORRIGIDA: Padrão DD/MM/AAAA (Fix Solicitado)
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY")
+    
+    # CORREÇÃO: Adicionada KEY única para evitar erro DuplicateElementId
+    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY", key="periodo_vendas")
     
     df_filt = df.copy()
     if isinstance(periodo, list) and len(periodo) == 2:
@@ -401,8 +407,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     dias_uteis = calcular_dias_uteis_restantes_mes()
     dias_passados = calcular_dias_uteis_passados()
-
-    # --- RESTAURAÇÃO: Funções de Renderização ricas do Código 1 ---
 
     def render_meta_mic():
         st.markdown("### 🏢 Meta MIC (Empresa)")
@@ -446,7 +450,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
                     barra_progresso_linda(tot_rep, rep_meta, f"Progresso {rep_nome}")
                     if falta_rep == 0: st.balloons()
 
-                    # RESTAURAÇÃO: Botão de Download do Código 1
                     csv = converter_df_para_csv(df_rep)
                     st.download_button(f"📥 Baixar Relatório de {rep_nome}", csv, f"Relatorio_{rep_nome}.csv", "text/csv")
                     st.divider()
@@ -458,7 +461,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             if not df_grupo.empty:
                 st.markdown("### 🏆 Top 10 Clientes (Supervisão)")
                 top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-                # RESTAURAÇÃO: Cores Verdes do Código 1
                 fig = px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
                 fig.update_layout(showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
@@ -486,9 +488,21 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             tot_u = df_user['valor_final'].sum()
             meta_u = float(u_data['meta'])
             falta_u = max(0, meta_u - tot_u)
-            ku1, ku2 = st.columns(2)
+            
+            # CORREÇÃO: Métricas adicionadas conforme solicitado
+            pedidos_u = df_user['id_pedido'].nunique()
+            ticket_u = tot_u / pedidos_u if pedidos_u > 0 else 0
+            
+            media_atual_u = tot_u / dias_passados if dias_passados > 0 else 0
+            media_nec_u = falta_u / dias_uteis if dias_uteis > 0 else 0
+            delta_u = media_atual_u - media_nec_u
+
+            ku1, ku2, ku3, ku4 = st.columns(4)
             ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
             ku2.metric("Falta", f"R$ {falta_u:,.2f}")
+            ku3.metric("Diária Nec.", f"R$ {media_nec_u:,.2f}", delta=f"{delta_u:,.2f}")
+            ku4.metric("Ticket Médio", f"R$ {ticket_u:,.2f}")
+            
             barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
             st.session_state['df_user_cache'] = df_user 
             st.divider()
@@ -498,7 +512,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
             top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-            # RESTAURAÇÃO: Cores Verdes do Código 1
             fig = px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
@@ -543,7 +556,7 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if item in mapa: mapa[item]()
 
 # ==============================================================================
-# 📦 RENDERIZAÇÃO EXPEDIÇÃO (Código 2 + Correções de Status/Data)
+# 📦 RENDERIZAÇÃO EXPEDIÇÃO
 # ==============================================================================
 
 def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas):
@@ -557,21 +570,21 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    # --- FILTRO DE DATA CORRIGIDO (Padrão DD/MM/AAAA) ---
+    # --- FILTRO DE DATA ---
     c_date1, c_date2 = st.columns([1, 2])
     with c_date1:
         st.caption("Filtrar por Data de Emissão")
         hoje = date.today()
-        # Data padrão: 1º dia do mês até o atual/último
         ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-        data_filtro = st.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY")
+        
+        # CORREÇÃO: Adicionada KEY única para evitar erro DuplicateElementId
+        data_filtro = st.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY", key="periodo_expedicao")
 
-    # Filtra DF por Data
     if isinstance(data_filtro, list) and len(data_filtro) == 2:
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
         df_exp = df_exp[(df_exp['dt_obj'] >= data_filtro[0]) & (df_exp['dt_obj'] <= data_filtro[1])]
 
-    # --- KPI: MÉTRICAS DE RESUMO ATUALIZADAS (5 Status) ---
+    # --- KPI: MÉTRICAS ---
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
     qtd_separacao = len(df_exp[df_exp['Status_Atual'] == 'Em Separação'])
     qtd_separados = len(df_exp[df_exp['Status_Atual'] == 'Separado']) # Para Faturar
@@ -591,7 +604,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
     
-    # Nomes bonitos para o filtro
     opcoes_filtro = [
         "Todos",
         "🆕 Aguardando (Emitidos)",
@@ -603,7 +615,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     
     filtro_status_display = c_f2.selectbox("Filtrar Status", opcoes_filtro)
     
-    # Mapeamento Reverso: Display bonito -> Status interno do Banco
     map_display_to_db = {
         "🆕 Aguardando (Emitidos)": "Emitido",
         "🖐️ Em Separação": "Em Separação",
@@ -627,7 +638,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             df_view['Vendedor'].str.lower().str.contains(t)
         ]
     
-    df_view = df_view.iloc[::-1] # Inverter ordem para ver mais recentes primeiro
+    df_view = df_view.iloc[::-1]
 
     st.divider()
     
@@ -658,7 +669,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                         st.text(log_txt.replace(" | ", "\n"))
 
             with c4:
-                # LÓGICA DE BOTÕES (Fluxo)
                 if status == "Emitido":
                     if pode_separar:
                         if st.button("▶️ Separar", key=f"s1_{ped}"):
@@ -673,14 +683,14 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                              atualizar_status_expedicao(ped, "Emitido", "", "", user_name, "Voltou para Emitido"); st.rerun()
                     else: st.warning("Separando...")
                 
-                elif status == "Separado": # Significa: Pronto para Faturar
+                elif status == "Separado": 
                     if pode_faturar:
                         if st.button("💲 Marcar Faturado", key=f"s3_{ped}"):
                             atualizar_status_expedicao(ped, "Faturado", "Data_Faturado", "User_Faturado", user_name, "Faturou (Aguardando Envio)"); st.rerun()
                     if pode_voltar and st.button("↩️ Voltar Sep.", key=f"v2_{ped}"):
                          atualizar_status_expedicao(ped, "Em Separação", "", "", user_name, "Voltou para Separação"); st.rerun()
                 
-                elif status == "Faturado": # Significa: Aguardando Envio
+                elif status == "Faturado": 
                     if pode_enviar:
                         if st.button("🚚 Enviar (Finalizar)", key=f"s4_{ped}"):
                             atualizar_status_expedicao(ped, "Enviado", "Data_Enviado", "User_Enviado", user_name, "Despachou / Finalizou"); st.rerun()
@@ -702,7 +712,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 df, col_vend, lista_reps, col_ped, col_nf = carregar_dados_vendas()
 
-# --- RESTAURAÇÃO: Tela de Login em Abas do Código 1 ---
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
@@ -743,12 +752,10 @@ else:
         else: st.title("MIC")
     with h2:
         st.write("")
-        # --- RESTAURAÇÃO: Menu de Configurações Completo do Código 1 ---
         with st.popover("⚙️", use_container_width=True):
             st.markdown(f"**{u_data['nome']}**")
             st.caption(f"Cargo: {cargo}")
             
-            # Edição de Cargo (Só para Admins)
             if cargo == "ADM":
                 with st.expander("👑 Admin: Alterar Cargos"):
                     usr_edit = st.selectbox("Usuário:", list(usuarios_dict.keys()))
@@ -758,7 +765,6 @@ else:
             
             st.markdown("---")
             
-            # Edição de Nome e Senha
             n_nome = st.text_input("Nome:", value=u_data['nome'])
             if st.button("Salvar Nome"): atualizar_campo(uid, "Nome", n_nome); st.rerun()
             n_senha = st.text_input("Nova Senha", type="password")
@@ -766,7 +772,6 @@ else:
             
             st.markdown("---")
 
-            # Ordenação de Layout (Código 1)
             opcoes_layout = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
             layout_salvo = u_data['layout'].split(',') if u_data['layout'] else opcoes_layout
             layout_salvo = [l for l in layout_salvo if l in opcoes_layout]
@@ -780,7 +785,6 @@ else:
 
             st.markdown("---")
             
-            # Zona de Perigo (Código 1)
             with st.expander("Zona de Perigo"):
                 check_del = st.checkbox("Confirmo exclusão da conta")
                 if st.button("Excluir Conta", type="primary", disabled=not check_del):
