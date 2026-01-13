@@ -17,13 +17,17 @@ st.set_page_config(page_title="Sistema Comercial MIC", layout="wide", page_icon=
 ARQUIVO_DADOS = "lista.csv" 
 ARQUIVO_LOGO = "logo.png"
 
-# Esconde o menu padrão e rodapé para ficar "App Nativo"
+# CSS para esconder menu padrão, rodapé e ajustar topo
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         [data-testid="stSidebar"] {display: none;}
-        .stApp {margin-top: -80px;}
+        .stApp {margin-top: -50px;}
+        /* Ajuste fino para o container de login ficar bonito */
+        div[data-testid="column"] {
+            background-color: transparent;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -51,10 +55,9 @@ def limpar_dado(dado):
 def inicializar_e_carregar_usuarios():
     try:
         df = conn.read(ttl=0)
-        # Meta_Rep agora guardará um JSON: {"Rep A": 100, "Rep B": 200}
-        # Config_Layout guardará a ordem: "Meta MIC,Supervisão,Top 10"
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout"]
         
+        # Cria estrutura se vazia
         if df.empty:
             df_init = pd.DataFrame([
                 {"Login": "admin", "Senha": "123", "Meta": 10000.0, "Nome": "Administrador", "Meta_Rep": "{}", "Config_Layout": ""},
@@ -66,7 +69,6 @@ def inicializar_e_carregar_usuarios():
         colunas_faltantes = [c for c in colunas_necessarias if c not in df.columns]
         if colunas_faltantes:
             for c in colunas_faltantes:
-                # Meta_Rep padrão é JSON vazio, Layout vazio usa o padrão
                 df[c] = "{}" if "Meta_Rep" in c else ""
             conn.update(data=df)
         
@@ -80,9 +82,10 @@ def inicializar_e_carregar_usuarios():
             
         return df
     except Exception as e:
+        # Fallback offline para não travar a tela
         return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout"])
 
-# Carrega e Processa
+# Carrega e Processa (COM CORREÇÃO DO BUG FLOAT)
 df_usuarios = inicializar_e_carregar_usuarios()
 META_GERAL_EMPRESA = 100000.0
 usuarios_dict = {}
@@ -93,10 +96,15 @@ if not df_usuarios.empty:
         if login_limpo == "__GLOBAL__":
             META_GERAL_EMPRESA = float(row["Meta"]) if pd.notnull(row["Meta"]) else 100000.0
         elif login_limpo: 
-            # Parse do JSON de Metas dos Representantes
+            # --- CORREÇÃO DO BUG CRÍTICO ---
             meta_rep_raw = row.get("Meta_Rep", "{}")
             try:
-                metas_reps_dict = json.loads(str(meta_rep_raw)) if meta_rep_raw else {}
+                # Se for float/int (erro antigo), força virar dict vazio
+                if isinstance(meta_rep_raw, (int, float)):
+                    metas_reps_dict = {}
+                else:
+                    metas_reps_dict = json.loads(str(meta_rep_raw)) if meta_rep_raw else {}
+                    if not isinstance(metas_reps_dict, dict): metas_reps_dict = {}
             except:
                 metas_reps_dict = {}
 
@@ -104,7 +112,7 @@ if not df_usuarios.empty:
                 "senha": limpar_dado(row["Senha"]),
                 "meta": float(row["Meta"]) if pd.notnull(row["Meta"]) else 0.0,
                 "nome": str(row["Nome"]),
-                "metas_reps": metas_reps_dict, # Dicionário {NomeRep: ValorMeta}
+                "metas_reps": metas_reps_dict, 
                 "layout": str(row.get("Config_Layout", ""))
             }
 
@@ -131,10 +139,8 @@ def atualizar_campo(login, campo, novo_valor):
         indices = df_atual.index[df_atual["Login"] == str(login).strip()].tolist()
         if indices:
             idx = indices[0]
-            # Se for dicionário (metas dos reps), vira JSON string
             if isinstance(novo_valor, dict):
                 novo_valor = json.dumps(novo_valor)
-            
             df_atual.at[idx, campo] = novo_valor
             conn.update(data=df_atual)
             return True
@@ -241,13 +247,13 @@ def converter_df_para_csv(df):
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 df, col_vend_nome, lista_reps_disponiveis = carregar_dados_vendas()
 
-# --- TELA DE LOGIN (Sem Sidebar) ---
+# --- TELA DE LOGIN (CORRIGIDA E MAIS ESTREITA) ---
 if st.session_state['usuario_logado'] is None:
-    # Layout centralizado
-    col_vazia1, col_login, col_vazia2 = st.columns([1, 2, 1])
+    # Layout centralizado mais estreito: [3, 2, 3]
+    col_vazia1, col_login, col_vazia2 = st.columns([3, 2, 3])
     
     with col_login:
-        st.write("") # Espaço
+        st.write("") 
         st.write("")
         if os.path.exists(ARQUIVO_LOGO):
             img = carregar_imagem_segura(ARQUIVO_LOGO)
@@ -265,7 +271,9 @@ if st.session_state['usuario_logado'] is None:
                     st.session_state['usuario_logado'] = u_in
                     st.rerun()
                 else: st.error("Acesso negado.")
-            if st.button("🔄 Atualizar Sistema", use_container_width=True):
+            
+            # Botão discreto para atualizar
+            if st.button("🔄", help="Atualizar sistema"):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -285,97 +293,99 @@ if st.session_state['usuario_logado'] is None:
 else:
     uid = st.session_state['usuario_logado']
     
-    # Validação de Segurança
     if uid not in usuarios_dict:
         st.session_state['usuario_logado'] = None
         st.rerun()
     
     u_data = usuarios_dict[uid]
     
-    # --- CABEÇALHO COM LOGO E CONFIGURAÇÕES ---
-    head1, head2 = st.columns([4, 1])
+    # --- CABEÇALHO ---
+    head1, head2 = st.columns([6, 1])
     with head1:
         if os.path.exists(ARQUIVO_LOGO):
             img = carregar_imagem_segura(ARQUIVO_LOGO)
-            if img: st.image(img, width=150)
+            if img: st.image(img, width=120)
         else: st.title("MIC")
     
     with head2:
-        st.write("") # Alinhamento
-        # --- MENU DE CONFIGURAÇÕES (ENGRENAGEM) ---
-        with st.popover("⚙️ Configurações", use_container_width=True):
-            st.markdown(f"**Olá, {u_data['nome']}**")
+        st.write("") 
+        # --- MENU DE CONFIGURAÇÕES (REORGANIZADO) ---
+        with st.popover("⚙️ Ajustes", use_container_width=True):
+            st.markdown(f"**{u_data['nome']}**")
             
-            # 1. ORDEM DO DASHBOARD (Customização)
+            # 1. Alterar Nome
+            novo_nome = st.text_input("Nome de Exibição:", value=u_data['nome'])
+            if st.button("Salvar Nome"):
+                if atualizar_campo(uid, "Nome", novo_nome): st.success("Ok!"); st.rerun()
+            
+            # 2. Alterar Senha
+            senha_nova = st.text_input("Nova Senha", type="password")
+            if st.button("Salvar Senha"):
+                if atualizar_campo(uid, "Senha", senha_nova): st.success("Ok!"); st.rerun()
+            
             st.markdown("---")
-            st.caption("Customize seu Painel")
-            opcoes_layout = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
             
-            # Carrega layout salvo ou usa padrão
+            # 3. Ordem do Layout
+            opcoes_layout = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
             layout_salvo = u_data['layout'].split(',') if u_data['layout'] else opcoes_layout
-            layout_salvo = [l for l in layout_salvo if l in opcoes_layout] # Limpa lixo
+            layout_salvo = [l for l in layout_salvo if l in opcoes_layout] 
             if not layout_salvo: layout_salvo = opcoes_layout 
 
-            novo_layout = st.multiselect("Ordem de Exibição:", opcoes_layout, default=layout_salvo)
+            st.caption("Ordem de Exibição (Delete e adicione para reordenar):")
+            novo_layout = st.multiselect("Layout:", opcoes_layout, default=layout_salvo)
             
             if st.button("Salvar Layout"):
                 layout_str = ",".join(novo_layout)
                 if atualizar_campo(uid, "Config_Layout", layout_str):
-                    st.success("Layout Salvo!")
-                    st.rerun()
+                    st.success("Salvo!"); st.rerun()
 
-            # 2. GESTÃO DE REPRESENTANTES (Adicionar/Remover)
             st.markdown("---")
-            st.caption("Gerenciar Representantes e Metas")
             
-            # Lista o que já tem
-            metas_reps = u_data['metas_reps'] # Dict {'Rep': 100, 'Rep2': 200}
-            
-            # Adicionar/Editar
-            rep_para_add = st.selectbox("Adicionar/Editar Rep:", [""] + lista_reps_disponiveis)
-            meta_para_add = st.number_input("Meta deste Rep (R$):", value=0.0)
-            
-            if st.button("💾 Salvar Rep"):
-                if rep_para_add:
-                    metas_reps[rep_para_add] = meta_para_add
-                    if atualizar_campo(uid, "Meta_Rep", metas_reps):
-                        st.success(f"{rep_para_add} atualizado!")
-                        st.rerun()
-            
-            # Remover
-            st.markdown("---")
-            st.caption("Remover Representante")
-            rep_para_remover = st.selectbox("Remover da lista:", [""] + list(metas_reps.keys()))
-            if st.button("🗑️ Remover Rep"):
-                if rep_para_remover in metas_reps:
-                    del metas_reps[rep_para_remover]
-                    if atualizar_campo(uid, "Meta_Rep", metas_reps):
-                        st.success("Removido!")
+            # 4. Excluir Conta
+            with st.expander("Zona de Perigo"):
+                check_del = st.checkbox("Confirmo a exclusão da conta")
+                if st.button("Excluir Conta", type="primary", disabled=not check_del):
+                    if excluir_usuario(uid):
+                        st.session_state['usuario_logado'] = None
                         st.rerun()
 
-            # 3. CONTA
-            st.markdown("---")
-            st.caption("Minha Conta")
-            minha_meta = st.number_input("Minha Meta Pessoal:", value=float(u_data['meta']))
-            if st.button("Salvar Minha Meta"):
-                if atualizar_campo(uid, "Meta", minha_meta): st.rerun()
-            
-            senha_nova = st.text_input("Nova Senha", type="password")
-            if st.button("Alterar Senha"):
-                if atualizar_campo(uid, "Senha", senha_nova): st.success("Senha alterada!")
-            
-            # META GLOBAL (Só editável aqui para simplificar)
-            st.markdown("---")
-            meta_global_input = st.number_input("Meta Global Empresa:", value=float(META_GERAL_EMPRESA))
-            if st.button("Salvar Meta Global"):
-                if atualizar_campo("__GLOBAL__", "Meta", meta_global_input): st.rerun()
-
-            if st.button("Sair da Conta", type="primary"):
+            if st.button("Sair"):
                 st.session_state['usuario_logado'] = None
                 st.rerun()
 
     st.divider()
     
+    # --- ÁREA DE GESTÃO DE REPRESENTANTES (MOVIDA PARA O CORPO) ---
+    with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
+        c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
+        metas_reps = u_data['metas_reps'] # Dict atual
+        
+        with c_add1:
+            rep_opcoes = sorted(lista_reps_disponiveis)
+            rep_selecionado = st.selectbox("Escolha o Representante:", [""] + rep_opcoes)
+        
+        with c_add2:
+            # Se já existir meta, puxa o valor, senão 0
+            valor_atual = metas_reps.get(rep_selecionado, 0.0) if rep_selecionado else 0.0
+            nova_meta_rep = st.number_input("Meta (R$):", value=float(valor_atual))
+        
+        with c_add3:
+            st.write("") # Espaço pra alinhar botão
+            st.write("")
+            col_b1, col_b2 = st.columns(2)
+            if col_b1.button("💾 Salvar", use_container_width=True):
+                if rep_selecionado:
+                    metas_reps[rep_selecionado] = nova_meta_rep
+                    if atualizar_campo(uid, "Meta_Rep", metas_reps):
+                        st.success("Salvo!")
+                        st.rerun()
+            
+            if col_b2.button("🗑️", help="Remover da minha lista", use_container_width=True):
+                if rep_selecionado and rep_selecionado in metas_reps:
+                    del metas_reps[rep_selecionado]
+                    if atualizar_campo(uid, "Meta_Rep", metas_reps):
+                        st.rerun()
+
     # --- RENDERIZAÇÃO DO DASHBOARD ---
     if df is not None:
         # Filtros Globais
@@ -414,7 +424,7 @@ else:
             metas_reps = u_data['metas_reps'] # Dict {Nome: Meta}
             if metas_reps:
                 st.markdown("### 🤝 Supervisão de Representantes")
-                # Cria abas para cada representante
+                # Cria abas para cada representante monitorado
                 abas = st.tabs(list(metas_reps.keys()))
                 
                 for i, (rep_nome, rep_meta) in enumerate(metas_reps.items()):
@@ -494,7 +504,7 @@ else:
                 ku4.metric("Ticket Médio", f"R$ {ticket_u:,.2f}")
                 barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
                 
-                # Cache temporário para as próximas funções
+                # Cache temporário
                 st.session_state['df_user_cache'] = df_user
             st.divider()
 
@@ -550,7 +560,7 @@ else:
             "Evolução Diária": render_evolucao
         }
 
-        # --- LOOP DE RENDERIZAÇÃO ---
+        # --- LOOP DE RENDERIZAÇÃO NA ORDEM ESCOLHIDA ---
         layout_usuario = u_data['layout'].split(',') if u_data['layout'] else list(mapa_secoes.keys())
         for secao in layout_usuario:
             if secao in mapa_secoes:
