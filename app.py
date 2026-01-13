@@ -202,6 +202,32 @@ def calcular_dias_uteis_restantes_mes():
     dias = np.busday_count(hoje, data_fim_mes + timedelta(days=1))
     return max(0, int(dias))
 
+def calcular_dias_uteis_passados():
+    hoje = date.today()
+    inicio_mes = hoje.replace(day=1)
+    if hoje == inicio_mes: return 1 # Evita divisão por zero no dia 1
+    dias = np.busday_count(inicio_mes, hoje)
+    return max(1, int(dias))
+
+def calcular_curva_abc(df_input):
+    if df_input.empty: return df_input
+    df_abc = df_input.copy()
+    # Garante ordenação
+    df_abc = df_abc.sort_values('valor_final', ascending=False)
+    # Calcula acumulado
+    total = df_abc['valor_final'].sum()
+    if total == 0: return df_abc
+    df_abc['acumulado'] = df_abc['valor_final'].cumsum()
+    df_abc['perc'] = df_abc['acumulado'] / total
+    
+    def classificar(p):
+        if p <= 0.80: return 'A'
+        elif p <= 0.95: return 'B'
+        else: return 'C'
+    
+    df_abc['Curva'] = df_abc['perc'].apply(classificar)
+    return df_abc
+
 def barra_progresso_linda(atual, meta, titulo="Progresso"):
     porcentagem = (atual / meta * 100) if meta > 0 else 0
     porcentagem_visual = min(porcentagem, 100) 
@@ -354,7 +380,6 @@ else:
             rep_selecionado = st.selectbox("Escolha o Representante:", [""] + rep_opcoes)
         
         with c_add2:
-            # Se já existir meta, puxa o valor, senão 0
             valor_atual = metas_reps.get(rep_selecionado, 0.0) if rep_selecionado else 0.0
             nova_meta_rep = st.number_input("Meta (R$):", value=float(valor_atual))
         
@@ -392,25 +417,35 @@ else:
             df_filt = df_filt[df_filt['status_ped'] == status_sel]
         
         dias_uteis = calcular_dias_uteis_restantes_mes()
+        dias_passados = calcular_dias_uteis_passados()
 
-        # --- FUNÇÕES DE RENDERIZAÇÃO (AGORA RECEBEM PARÂMETROS) ---
+        # --- FUNÇÕES DE RENDERIZAÇÃO ---
         
-        def render_meta_mic(dias_uteis_val):
+        def render_meta_mic(dias_uteis_val, dias_passados_val):
             st.markdown("### 🏢 Meta MIC (Empresa)")
             tot_geral = df_filt['valor_final'].sum()
             falta_emp = max(0, META_GERAL_EMPRESA - tot_geral)
             pedidos = df_filt['id_pedido'].nunique()
             ticket = tot_geral / pedidos if pedidos > 0 else 0
             
+            # Tendência
+            media_diaria_atual = tot_geral / dias_passados_val if dias_passados_val > 0 else 0
+            media_necessaria = falta_emp / dias_uteis_val if dias_uteis_val > 0 else 0
+            
+            # Delta da métrica (Verde se atual > necessaria)
+            delta_tendencia = media_diaria_atual - media_necessaria
+            
             barra_progresso_linda(tot_geral, META_GERAL_EMPRESA, "Progresso Geral")
+            if falta_emp == 0: st.balloons()
+
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Vendas Totais", f"R$ {tot_geral:,.2f}")
-            k2.metric("Diária (Restante)", f"R$ {(falta_emp / dias_uteis_val if dias_uteis_val > 0 else 0):,.2f}")
+            k2.metric("Diária (Restante)", f"R$ {media_necessaria:,.2f}", delta=f"{delta_tendencia:,.2f}", delta_color="normal")
             k3.metric("Falta", f"R$ {falta_emp:,.2f}")
             k4.metric("Ticket Médio", f"R$ {ticket:,.2f}")
             st.divider()
 
-        def render_supervisao(user_data, dias_uteis_val):
+        def render_supervisao(user_data, dias_uteis_val, dias_passados_val):
             metas_reps = user_data['metas_reps'] # Dict {Nome: Meta}
             if metas_reps:
                 st.markdown("### 🤝 Supervisão de Representantes")
@@ -424,14 +459,19 @@ else:
                         pedidos_rep = df_rep['id_pedido'].nunique()
                         ticket_rep = tot_rep / pedidos_rep if pedidos_rep > 0 else 0
                         
+                        media_diaria_atual = tot_rep / dias_passados_val if dias_passados_val > 0 else 0
+                        media_necessaria = falta_rep / dias_uteis_val if dias_uteis_val > 0 else 0
+                        delta_tendencia = media_diaria_atual - media_necessaria
+
                         st.caption(f"Meta Definida: R$ {rep_meta:,.2f}")
                         r1, r2, r3, r4 = st.columns(4)
                         r1.metric("Vendas", f"R$ {tot_rep:,.2f}")
                         r2.metric("Falta", f"R$ {falta_rep:,.2f}")
-                        r3.metric("Diária", f"R$ {(falta_rep / dias_uteis_val if dias_uteis_val > 0 else 0):,.2f}")
+                        r3.metric("Diária", f"R$ {media_necessaria:,.2f}", delta=f"{delta_tendencia:,.2f}", delta_color="normal")
                         r4.metric("Ticket Médio", f"R$ {ticket_rep:,.2f}")
                         
                         barra_progresso_linda(tot_rep, rep_meta, f"Progresso {rep_nome}")
+                        if falta_rep == 0: st.balloons()
                         
                         csv = converter_df_para_csv(df_rep)
                         st.download_button(f"📥 Baixar Relatório de {rep_nome}", csv, f"Relatorio_{rep_nome}.csv", "text/csv")
@@ -459,8 +499,13 @@ else:
                 
                 with st.expander("🔎 Filtrar Carteira Supervisão", expanded=True):
                     busca = st.text_input("Buscar Cliente (Nome/CNPJ):", key="busca_super")
+                    
+                    # Agrupamento para ABC
                     cols_grp = ['Cliente', 'CNPJ', 'Representante'] if 'CNPJ' in df_grupo.columns else ['Cliente', 'Representante']
-                    df_lista = df_grupo.groupby(cols_grp)['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+                    df_lista = df_grupo.groupby(cols_grp)['valor_final'].sum().reset_index()
+                    
+                    # Aplica Curva ABC
+                    df_lista = calcular_curva_abc(df_lista)
                     
                     if busca:
                         termo = busca.upper()
@@ -469,10 +514,15 @@ else:
                         df_lista = df_lista[mask]
                     
                     df_lista['Vendas'] = df_lista['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                    st.dataframe(df_lista, use_container_width=True, hide_index=True)
+                    # Reordena colunas para mostrar a Curva
+                    cols_show = ['Curva', 'Cliente', 'Vendas']
+                    if 'CNPJ' in df_lista.columns: cols_show.insert(2, 'CNPJ')
+                    if 'Representante' in df_lista.columns: cols_show.append('Representante')
+                    
+                    st.dataframe(df_lista[cols_show], use_container_width=True, hide_index=True)
                 st.divider()
 
-        def render_individual(user_data, dias_uteis_val):
+        def render_individual(user_data, dias_uteis_val, dias_passados_val):
             st.markdown(f"### 👤 Performance Individual: {user_data['nome']}")
             nome_padrao = user_data['nome'].split()[0]
             nome_busca = st.text_input("Filtrar meu nome na lista (se necessário):", value=nome_padrao)
@@ -485,12 +535,18 @@ else:
                 pedidos_user = df_user['id_pedido'].nunique()
                 ticket_u = tot_u / pedidos_user if pedidos_user > 0 else 0
                 
+                media_diaria_atual = tot_u / dias_passados_val if dias_passados_val > 0 else 0
+                media_necessaria = falta_u / dias_uteis_val if dias_uteis_val > 0 else 0
+                delta_tendencia = media_diaria_atual - media_necessaria
+
                 ku1, ku2, ku3, ku4 = st.columns(4)
                 ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
                 ku2.metric("Minha Meta", f"R$ {meta_u:,.2f}")
                 ku3.metric("Falta", f"R$ {falta_u:,.2f}")
-                ku4.metric("Ticket Médio", f"R$ {ticket_u:,.2f}")
+                ku4.metric("Diária", f"R$ {media_necessaria:,.2f}", delta=f"{delta_tendencia:,.2f}", delta_color="normal")
+                
                 barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
+                if falta_u == 0: st.balloons()
                 
                 st.session_state['df_user_cache'] = df_user
             st.divider()
@@ -509,14 +565,22 @@ else:
                     with st.expander("🔎 Pesquisar Meus Clientes", expanded=True):
                         busca_u = st.text_input("Filtrar meus clientes:", key="busca_user")
                         cols_grp_u = ['Cliente', 'CNPJ'] if 'CNPJ' in df_user.columns else ['Cliente']
-                        df_lista_u = df_user.groupby(cols_grp_u)['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+                        df_lista_u = df_user.groupby(cols_grp_u)['valor_final'].sum().reset_index()
+                        
+                        # ABC
+                        df_lista_u = calcular_curva_abc(df_lista_u)
+
                         if busca_u:
                             termo_u = busca_u.upper()
                             mask_u = df_lista_u['Cliente'].astype(str).str.upper().str.contains(termo_u)
                             if 'CNPJ' in df_lista_u.columns: mask_u |= df_lista_u['CNPJ'].astype(str).str.contains(termo_u)
                             df_lista_u = df_lista_u[mask_u]
+                        
                         df_lista_u['Vendas'] = df_lista_u['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                        st.dataframe(df_lista_u, use_container_width=True, hide_index=True)
+                        
+                        cols_show = ['Curva', 'Cliente', 'Vendas']
+                        if 'CNPJ' in df_lista_u.columns: cols_show.insert(2, 'CNPJ')
+                        st.dataframe(df_lista_u[cols_show], use_container_width=True, hide_index=True)
                     st.divider()
 
         def render_ranking():
@@ -535,22 +599,23 @@ else:
             st.plotly_chart(fig_l, use_container_width=True)
             st.divider()
 
-        # --- LOOP DE RENDERIZAÇÃO NA ORDEM ESCOLHIDA ---
-        layout_usuario = u_data['layout'].split(',') if u_data['layout'] else [
-            "Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", 
-            "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", 
-            "Ranking Geral", "Evolução Diária"
-        ]
-        
+        # --- MAPA DE SEÇÕES ---
+        mapa_secoes = {
+            "Meta MIC (Empresa)": lambda: render_meta_mic(dias_uteis, dias_passados),
+            "Supervisão (Reps)": lambda: render_supervisao(u_data, dias_uteis, dias_passados),
+            "Top 10 Clientes (Reps)": lambda: render_top10_reps(u_data),
+            "Lista Clientes (Reps)": lambda: render_lista_reps(u_data),
+            "Performance Individual": lambda: render_individual(u_data, dias_uteis, dias_passados),
+            "Meus Top 10 Clientes": render_top10_individual,
+            "Ranking Geral": render_ranking,
+            "Evolução Diária": render_evolucao
+        }
+
+        # --- LOOP DE RENDERIZAÇÃO ---
+        layout_usuario = u_data['layout'].split(',') if u_data['layout'] else list(mapa_secoes.keys())
         for secao in layout_usuario:
-            if secao == "Meta MIC (Empresa)": render_meta_mic(dias_uteis)
-            elif secao == "Supervisão (Reps)": render_supervisao(u_data, dias_uteis)
-            elif secao == "Top 10 Clientes (Reps)": render_top10_reps(u_data)
-            elif secao == "Lista Clientes (Reps)": render_lista_reps(u_data)
-            elif secao == "Performance Individual": render_individual(u_data, dias_uteis)
-            elif secao == "Meus Top 10 Clientes": render_top10_individual()
-            elif secao == "Ranking Geral": render_ranking()
-            elif secao == "Evolução Diária": render_evolucao()
+            if secao in mapa_secoes:
+                mapa_secoes[secao]()
                 
     else:
         st.error(f"Arquivo '{ARQUIVO_DADOS}' não encontrado.")
