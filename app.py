@@ -318,6 +318,7 @@ def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
 
 def render_bolinhas_status(status):
+    # Mapa atualizado para os status internos
     mapa = {
         'Emitido':      ['🔵','⚪','⚪','⚪','⚪'],
         'Em Separação': ['🔵','🟠','⚪','⚪','⚪'],
@@ -362,9 +363,12 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
+    
+    # 📆 DATA CORRIGIDA: Padrão DD/MM/AAAA
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
+    # O date_input retorna objeto date, o 'format' ajusta apenas a visualização
+    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], format="DD/MM/YYYY")
     
     df_filt = df.copy()
     if isinstance(periodo, list) and len(periodo) == 2:
@@ -481,6 +485,7 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if not evol.empty:
             fig = px.line(evol, x='Data', y='Valor', markers=True, text='Valor')
             fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
+            # Formato brasileiro no eixo X também
             fig.update_layout(xaxis_tickformat='%d/%m')
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -512,43 +517,65 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    # --- FILTRO DE DATA ---
+    # --- FILTRO DE DATA CORRIGIDO ---
     c_date1, c_date2 = st.columns([1, 2])
     with c_date1:
         st.caption("Filtrar por Data de Emissão")
         hoje = date.today()
-        # Filtro padrão: Mês Atual
-        data_filtro = st.date_input("Período", [hoje.replace(day=1), hoje])
+        # Data padrão: 1º dia do mês até o atual/último
+        data_filtro = st.date_input("Período", [hoje.replace(day=1), hoje], format="DD/MM/YYYY")
 
-    # Filtra DF por Data (converte coluna texto para data)
+    # Filtra DF por Data
     if isinstance(data_filtro, list) and len(data_filtro) == 2:
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
         df_exp = df_exp[(df_exp['dt_obj'] >= data_filtro[0]) & (df_exp['dt_obj'] <= data_filtro[1])]
 
-    # --- MÉTRICAS DE RESUMO (KPIs) ---
+    # --- KPI: MÉTRICAS DE RESUMO ATUALIZADAS ---
+    # Contagens baseadas nos status internos
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
     qtd_separacao = len(df_exp[df_exp['Status_Atual'] == 'Em Separação'])
-    qtd_faturar = len(df_exp[df_exp['Status_Atual'] == 'Separado'])
-    qtd_finalizados = len(df_exp[df_exp['Status_Atual'] == 'Enviado'])
+    qtd_separados = len(df_exp[df_exp['Status_Atual'] == 'Separado']) # Para Faturar
+    qtd_faturados = len(df_exp[df_exp['Status_Atual'] == 'Faturado']) # Aguardando Envio
+    qtd_finalizados = len(df_exp[df_exp['Status_Atual'] == 'Enviado']) # Finalizados
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("🆕 Aguardando", qtd_emitidos)
-    m2.metric("🖐️ Em Separação", qtd_separacao)
-    m3.metric("💲 Para Faturar", qtd_faturar)
-    m4.metric("🚚 Finalizados", qtd_finalizados)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("🆕 Aguardando", qtd_emitidos)
+    k2.metric("🖐️ Em Separação", qtd_separacao)
+    k3.metric("💲 Para Faturar", qtd_separados)
+    k4.metric("🧾 Faturados", qtd_faturados)
+    k5.metric("🚚 Finalizados", qtd_finalizados)
     
     st.divider()
 
     # --- FILTROS VISUAIS ---
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
-    filtro_status = c_f2.selectbox("Filtrar Status", ["Todos", "Emitidos", "Separando", "Faturados", "Enviados"])
     
+    # Nomes bonitos para o filtro
+    opcoes_filtro = [
+        "Todos",
+        "🆕 Aguardando (Emitidos)",
+        "🖐️ Em Separação",
+        "💲 Para Faturar (Separados)",
+        "🧾 Faturado (Aguardando envio)",
+        "🚚 Finalizados (Enviados)"
+    ]
+    
+    filtro_status_display = c_f2.selectbox("Filtrar Status", opcoes_filtro)
+    
+    # Mapeamento Reverso: Display bonito -> Status interno do Banco
+    map_display_to_db = {
+        "🆕 Aguardando (Emitidos)": "Emitido",
+        "🖐️ Em Separação": "Em Separação",
+        "💲 Para Faturar (Separados)": "Separado",
+        "🧾 Faturado (Aguardando envio)": "Faturado",
+        "🚚 Finalizados (Enviados)": "Enviado"
+    }
+
     mask_status = [True] * len(df_exp)
-    if filtro_status == "Emitidos": mask_status = df_exp['Status_Atual'] == "Emitido"
-    elif filtro_status == "Separando": mask_status = df_exp['Status_Atual'].isin(["Em Separação", "Separado"])
-    elif filtro_status == "Faturados": mask_status = df_exp['Status_Atual'] == "Faturado"
-    elif filtro_status == "Enviados": mask_status = df_exp['Status_Atual'] == "Enviado"
+    if filtro_status_display != "Todos":
+        status_interno = map_display_to_db.get(filtro_status_display)
+        mask_status = df_exp['Status_Atual'] == status_interno
     
     df_view = df_exp[mask_status]
 
@@ -560,7 +587,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             df_view['Vendedor'].str.lower().str.contains(t)
         ]
     
-    df_view = df_view.iloc[::-1]
+    df_view = df_view.iloc[::-1] # Inverter ordem para ver mais recentes primeiro
 
     st.divider()
     
@@ -591,6 +618,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                         st.text(log_txt.replace(" | ", "\n"))
 
             with c4:
+                # LÓGICA DE BOTÕES (Fluxo)
                 if status == "Emitido":
                     if pode_separar:
                         if st.button("▶️ Separar", key=f"s1_{ped}"):
@@ -600,22 +628,22 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                 elif status == "Em Separação":
                     if pode_separar:
                         if st.button("✅ Finalizar Sep.", key=f"s2_{ped}"):
-                            atualizar_status_expedicao(ped, "Separado", "Data_Separado", "User_Separado", user_name, "Finalizou Separação"); st.rerun()
+                            atualizar_status_expedicao(ped, "Separado", "Data_Separado", "User_Separado", user_name, "Finalizou Separação (Pronto p/ Faturar)"); st.rerun()
                         if pode_voltar and st.button("↩️ Voltar", key=f"v1_{ped}"):
                              atualizar_status_expedicao(ped, "Emitido", "", "", user_name, "Voltou para Emitido"); st.rerun()
                     else: st.warning("Separando...")
                 
-                elif status == "Separado":
+                elif status == "Separado": # Significa: Pronto para Faturar
                     if pode_faturar:
                         if st.button("💲 Marcar Faturado", key=f"s3_{ped}"):
-                            atualizar_status_expedicao(ped, "Faturado", "Data_Faturado", "User_Faturado", user_name, "Marcou Faturado"); st.rerun()
+                            atualizar_status_expedicao(ped, "Faturado", "Data_Faturado", "User_Faturado", user_name, "Faturou (Aguardando Envio)"); st.rerun()
                     if pode_voltar and st.button("↩️ Voltar Sep.", key=f"v2_{ped}"):
                          atualizar_status_expedicao(ped, "Em Separação", "", "", user_name, "Voltou para Separação"); st.rerun()
                 
-                elif status == "Faturado":
+                elif status == "Faturado": # Significa: Aguardando Envio
                     if pode_enviar:
-                        if st.button("🚚 Enviar", key=f"s4_{ped}"):
-                            atualizar_status_expedicao(ped, "Enviado", "Data_Enviado", "User_Enviado", user_name, "Despachou"); st.rerun()
+                        if st.button("🚚 Enviar (Finalizar)", key=f"s4_{ped}"):
+                            atualizar_status_expedicao(ped, "Enviado", "Data_Enviado", "User_Enviado", user_name, "Despachou / Finalizou"); st.rerun()
                     else: st.success("Pronto p/ Envio")
                     if pode_voltar and st.button("↩️ Voltar Fat.", key=f"v3_{ped}"):
                          atualizar_status_expedicao(ped, "Separado", "", "", user_name, "Cancelou Faturamento (Voltou)"); st.rerun()
