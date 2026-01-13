@@ -17,17 +17,14 @@ st.set_page_config(page_title="Sistema Comercial MIC", layout="wide", page_icon=
 ARQUIVO_DADOS = "lista.csv" 
 ARQUIVO_LOGO = "logo.png"
 
-# CSS para esconder menu padrão, rodapé e ajustar topo
+# CSS para visual limpo
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         [data-testid="stSidebar"] {display: none;}
         .stApp {margin-top: -50px;}
-        /* Ajuste fino para o container de login ficar bonito */
-        div[data-testid="column"] {
-            background-color: transparent;
-        }
+        div[data-testid="column"] {background-color: transparent;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -57,7 +54,6 @@ def inicializar_e_carregar_usuarios():
         df = conn.read(ttl=0)
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout"]
         
-        # Cria estrutura se vazia
         if df.empty:
             df_init = pd.DataFrame([
                 {"Login": "admin", "Senha": "123", "Meta": 10000.0, "Nome": "Administrador", "Meta_Rep": "{}", "Config_Layout": ""},
@@ -82,10 +78,9 @@ def inicializar_e_carregar_usuarios():
             
         return df
     except Exception as e:
-        # Fallback offline para não travar a tela
         return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout"])
 
-# Carrega e Processa (COM CORREÇÃO DO BUG FLOAT)
+# Carrega e Processa
 df_usuarios = inicializar_e_carregar_usuarios()
 META_GERAL_EMPRESA = 100000.0
 usuarios_dict = {}
@@ -96,10 +91,8 @@ if not df_usuarios.empty:
         if login_limpo == "__GLOBAL__":
             META_GERAL_EMPRESA = float(row["Meta"]) if pd.notnull(row["Meta"]) else 100000.0
         elif login_limpo: 
-            # --- CORREÇÃO DO BUG CRÍTICO ---
             meta_rep_raw = row.get("Meta_Rep", "{}")
             try:
-                # Se for float/int (erro antigo), força virar dict vazio
                 if isinstance(meta_rep_raw, (int, float)):
                     metas_reps_dict = {}
                 else:
@@ -247,9 +240,8 @@ def converter_df_para_csv(df):
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 df, col_vend_nome, lista_reps_disponiveis = carregar_dados_vendas()
 
-# --- TELA DE LOGIN (CORRIGIDA E MAIS ESTREITA) ---
+# --- TELA DE LOGIN (MAIS ESTREITA) ---
 if st.session_state['usuario_logado'] is None:
-    # Layout centralizado mais estreito: [3, 2, 3]
     col_vazia1, col_login, col_vazia2 = st.columns([3, 2, 3])
     
     with col_login:
@@ -272,7 +264,6 @@ if st.session_state['usuario_logado'] is None:
                     st.rerun()
                 else: st.error("Acesso negado.")
             
-            # Botão discreto para atualizar
             if st.button("🔄", help="Atualizar sistema"):
                 st.cache_data.clear()
                 st.rerun()
@@ -309,7 +300,7 @@ else:
     
     with head2:
         st.write("") 
-        # --- MENU DE CONFIGURAÇÕES (REORGANIZADO) ---
+        # --- MENU DE CONFIGURAÇÕES ---
         with st.popover("⚙️ Ajustes", use_container_width=True):
             st.markdown(f"**{u_data['nome']}**")
             
@@ -331,7 +322,7 @@ else:
             layout_salvo = [l for l in layout_salvo if l in opcoes_layout] 
             if not layout_salvo: layout_salvo = opcoes_layout 
 
-            st.caption("Ordem de Exibição (Delete e adicione para reordenar):")
+            st.caption("Ordem de Exibição (Remova e adicione para reordenar):")
             novo_layout = st.multiselect("Layout:", opcoes_layout, default=layout_salvo)
             
             if st.button("Salvar Layout"):
@@ -353,9 +344,7 @@ else:
                 st.session_state['usuario_logado'] = None
                 st.rerun()
 
-    st.divider()
-    
-    # --- ÁREA DE GESTÃO DE REPRESENTANTES (MOVIDA PARA O CORPO) ---
+    # --- ÁREA DE GESTÃO DE REPRESENTANTES (NO TOPO) ---
     with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
         c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
         metas_reps = u_data['metas_reps'] # Dict atual
@@ -370,7 +359,7 @@ else:
             nova_meta_rep = st.number_input("Meta (R$):", value=float(valor_atual))
         
         with c_add3:
-            st.write("") # Espaço pra alinhar botão
+            st.write("") 
             st.write("")
             col_b1, col_b2 = st.columns(2)
             if col_b1.button("💾 Salvar", use_container_width=True):
@@ -380,15 +369,16 @@ else:
                         st.success("Salvo!")
                         st.rerun()
             
-            if col_b2.button("🗑️", help="Remover da minha lista", use_container_width=True):
+            if col_b2.button("🗑️", help="Remover", use_container_width=True):
                 if rep_selecionado and rep_selecionado in metas_reps:
                     del metas_reps[rep_selecionado]
                     if atualizar_campo(uid, "Meta_Rep", metas_reps):
                         st.rerun()
 
+    st.divider()
+    
     # --- RENDERIZAÇÃO DO DASHBOARD ---
     if df is not None:
-        # Filtros Globais
         c1, c2 = st.columns(2)
         status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
         hoje = date.today()
@@ -403,9 +393,9 @@ else:
         
         dias_uteis = calcular_dias_uteis_restantes_mes()
 
-        # --- FUNÇÕES DE RENDERIZAÇÃO ---
+        # --- FUNÇÕES DE RENDERIZAÇÃO (AGORA RECEBEM PARÂMETROS) ---
         
-        def render_meta_mic():
+        def render_meta_mic(dias_uteis_val):
             st.markdown("### 🏢 Meta MIC (Empresa)")
             tot_geral = df_filt['valor_final'].sum()
             falta_emp = max(0, META_GERAL_EMPRESA - tot_geral)
@@ -415,16 +405,15 @@ else:
             barra_progresso_linda(tot_geral, META_GERAL_EMPRESA, "Progresso Geral")
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("Vendas Totais", f"R$ {tot_geral:,.2f}")
-            k2.metric("Diária (Restante)", f"R$ {(falta_emp / dias_uteis if dias_uteis > 0 else 0):,.2f}")
+            k2.metric("Diária (Restante)", f"R$ {(falta_emp / dias_uteis_val if dias_uteis_val > 0 else 0):,.2f}")
             k3.metric("Falta", f"R$ {falta_emp:,.2f}")
             k4.metric("Ticket Médio", f"R$ {ticket:,.2f}")
             st.divider()
 
-        def render_supervisao():
-            metas_reps = u_data['metas_reps'] # Dict {Nome: Meta}
+        def render_supervisao(user_data, dias_uteis_val):
+            metas_reps = user_data['metas_reps'] # Dict {Nome: Meta}
             if metas_reps:
                 st.markdown("### 🤝 Supervisão de Representantes")
-                # Cria abas para cada representante monitorado
                 abas = st.tabs(list(metas_reps.keys()))
                 
                 for i, (rep_nome, rep_meta) in enumerate(metas_reps.items()):
@@ -439,17 +428,16 @@ else:
                         r1, r2, r3, r4 = st.columns(4)
                         r1.metric("Vendas", f"R$ {tot_rep:,.2f}")
                         r2.metric("Falta", f"R$ {falta_rep:,.2f}")
-                        r3.metric("Diária", f"R$ {(falta_rep / dias_uteis if dias_uteis > 0 else 0):,.2f}")
+                        r3.metric("Diária", f"R$ {(falta_rep / dias_uteis_val if dias_uteis_val > 0 else 0):,.2f}")
                         r4.metric("Ticket Médio", f"R$ {ticket_rep:,.2f}")
                         
                         barra_progresso_linda(tot_rep, rep_meta, f"Progresso {rep_nome}")
                         
-                        # AREA DE DOWNLOAD
                         csv = converter_df_para_csv(df_rep)
                         st.download_button(f"📥 Baixar Relatório de {rep_nome}", csv, f"Relatorio_{rep_nome}.csv", "text/csv")
 
-        def render_top10_reps():
-            metas_reps = u_data['metas_reps']
+        def render_top10_reps(user_data):
+            metas_reps = user_data['metas_reps']
             if metas_reps:
                 lista_nomes_reps = list(metas_reps.keys())
                 df_grupo = df_filt[df_filt['Representante'].isin(lista_nomes_reps)]
@@ -462,8 +450,8 @@ else:
                     st.plotly_chart(fig, use_container_width=True)
                     st.divider()
 
-        def render_lista_reps():
-            metas_reps = u_data['metas_reps']
+        def render_lista_reps(user_data):
+            metas_reps = user_data['metas_reps']
             if metas_reps:
                 st.markdown("### 📋 Carteira de Clientes (Supervisão)")
                 lista_nomes_reps = list(metas_reps.keys())
@@ -484,15 +472,15 @@ else:
                     st.dataframe(df_lista, use_container_width=True, hide_index=True)
                 st.divider()
 
-        def render_individual():
-            st.markdown(f"### 👤 Performance Individual: {u_logado['nome']}")
-            nome_padrao = u_logado['nome'].split()[0]
+        def render_individual(user_data, dias_uteis_val):
+            st.markdown(f"### 👤 Performance Individual: {user_data['nome']}")
+            nome_padrao = user_data['nome'].split()[0]
             nome_busca = st.text_input("Filtrar meu nome na lista (se necessário):", value=nome_padrao)
             
             if col_vend_nome:
                 df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
                 tot_u = df_user['valor_final'].sum()
-                meta_u = float(u_logado['meta'])
+                meta_u = float(user_data['meta'])
                 falta_u = max(0, meta_u - tot_u)
                 pedidos_user = df_user['id_pedido'].nunique()
                 ticket_u = tot_u / pedidos_user if pedidos_user > 0 else 0
@@ -504,7 +492,6 @@ else:
                 ku4.metric("Ticket Médio", f"R$ {ticket_u:,.2f}")
                 barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
                 
-                # Cache temporário
                 st.session_state['df_user_cache'] = df_user
             st.divider()
 
@@ -548,23 +535,22 @@ else:
             st.plotly_chart(fig_l, use_container_width=True)
             st.divider()
 
-        # --- MAPA DE SEÇÕES ---
-        mapa_secoes = {
-            "Meta MIC (Empresa)": render_meta_mic,
-            "Supervisão (Reps)": render_supervisao,
-            "Top 10 Clientes (Reps)": render_top10_reps,
-            "Lista Clientes (Reps)": render_lista_reps,
-            "Performance Individual": render_individual,
-            "Meus Top 10 Clientes": render_top10_individual,
-            "Ranking Geral": render_ranking,
-            "Evolução Diária": render_evolucao
-        }
-
         # --- LOOP DE RENDERIZAÇÃO NA ORDEM ESCOLHIDA ---
-        layout_usuario = u_data['layout'].split(',') if u_data['layout'] else list(mapa_secoes.keys())
+        layout_usuario = u_data['layout'].split(',') if u_data['layout'] else [
+            "Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", 
+            "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", 
+            "Ranking Geral", "Evolução Diária"
+        ]
+        
         for secao in layout_usuario:
-            if secao in mapa_secoes:
-                mapa_secoes[secao]()
+            if secao == "Meta MIC (Empresa)": render_meta_mic(dias_uteis)
+            elif secao == "Supervisão (Reps)": render_supervisao(u_data, dias_uteis)
+            elif secao == "Top 10 Clientes (Reps)": render_top10_reps(u_data)
+            elif secao == "Lista Clientes (Reps)": render_lista_reps(u_data)
+            elif secao == "Performance Individual": render_individual(u_data, dias_uteis)
+            elif secao == "Meus Top 10 Clientes": render_top10_individual()
+            elif secao == "Ranking Geral": render_ranking()
+            elif secao == "Evolução Diária": render_evolucao()
                 
     else:
         st.error(f"Arquivo '{ARQUIVO_DADOS}' não encontrado.")
