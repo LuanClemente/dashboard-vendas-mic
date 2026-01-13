@@ -223,7 +223,6 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             if coluna_data: df_exp.at[i, coluna_data] = agora
             if coluna_user: df_exp.at[i, coluna_user] = usuario_nome
             
-            # Correção do Erro de Log: Força conversão para string
             log_antigo = str(df_exp.at[i, 'Log_Historico']) if pd.notnull(df_exp.at[i, 'Log_Historico']) else ""
             if log_antigo == "nan": log_antigo = ""
             
@@ -420,7 +419,7 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
-                # CORREÇÃO: Reseta índice para virar coluna
+                # CORREÇÃO: Reset Index
                 top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
                 st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
@@ -432,7 +431,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
-                # CORREÇÃO: Reset Index já estava, mas garante
                 df_abc = calcular_curva_abc(df_grupo.groupby(['Cliente', 'CNPJ'])['valor_final'].sum().reset_index())
                 if busca:
                     df_abc = df_abc[df_abc['Cliente'].str.contains(busca, case=False)]
@@ -473,9 +471,18 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             st.divider()
 
     def render_evolucao():
-        st.markdown("### 📈 Evolução")
-        evol = df_filt.groupby('data_final')['valor_final'].sum().reset_index()
-        st.plotly_chart(px.line(evol, x='data_final', y='valor_final', markers=True), use_container_width=True)
+        st.markdown("### 📈 Evolução Diária")
+        # Correção da Evolução (Agrupa por DIA, não por timestamp)
+        df_ev = df_filt.copy()
+        df_ev['Dia'] = df_ev['data_final'].dt.date
+        evol = df_ev.groupby('Dia')['valor_final'].sum().reset_index().sort_values('Dia')
+        
+        if not evol.empty:
+            fig = px.line(evol, x='Dia', y='valor_final', markers=True, text='valor_final')
+            fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Sem dados.")
         st.divider()
 
     mapa = {
@@ -548,7 +555,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                 if row['Data_Enviado']: txt_time += f"🚚 Env: {row['Data_Enviado']} ({row['User_Enviado']})"
                 st.caption(txt_time)
                 
-                # Correção do Log (Converte para string segura antes do replace)
                 log_txt = str(row['Log_Historico']) if pd.notnull(row['Log_Historico']) else ""
                 if log_txt:
                     with st.popover("📜 Ver Histórico"):
