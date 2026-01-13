@@ -33,6 +33,10 @@ st.markdown("""
             border-radius: 10px;
             padding: 5px;
         }
+        /* Ajuste para as métricas ficarem bonitas */
+        [data-testid="stMetricValue"] {
+            font-size: 1.5rem !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -329,7 +333,6 @@ def render_bolinhas_status(status):
 # ==============================================================================
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
-    # Layout Configurado
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
@@ -419,7 +422,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
-                # CORREÇÃO: Reset Index
                 top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
                 st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
@@ -457,7 +459,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if 'df_user_cache' in st.session_state and not st.session_state['df_user_cache'].empty:
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
-            # CORREÇÃO: Reset Index
             top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
@@ -465,24 +466,25 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     def render_ranking():
         if col_vend_nome:
             st.markdown("### 🏆 Ranking Geral")
-            # CORREÇÃO: Reset Index
             rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
     def render_evolucao():
         st.markdown("### 📈 Evolução Diária")
-        # Correção da Evolução (Agrupa por DIA, não por timestamp)
         df_ev = df_filt.copy()
-        df_ev['Dia'] = df_ev['data_final'].dt.date
-        evol = df_ev.groupby('Dia')['valor_final'].sum().reset_index().sort_values('Dia')
+        df_ev['data_final'] = pd.to_datetime(df_ev['data_final'], errors='coerce')
+        evol = df_ev.groupby(df_ev['data_final'].dt.normalize())['valor_final'].sum().reset_index()
+        evol.columns = ['Data', 'Valor'] 
+        evol = evol.sort_values('Data')
         
         if not evol.empty:
-            fig = px.line(evol, x='Dia', y='valor_final', markers=True, text='valor_final')
+            fig = px.line(evol, x='Data', y='Valor', markers=True, text='Valor')
             fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
+            fig.update_layout(xaxis_tickformat='%d/%m')
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Sem dados.")
+            st.info("Sem dados para o período.")
         st.divider()
 
     mapa = {
@@ -510,6 +512,34 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
+    # --- FILTRO DE DATA ---
+    c_date1, c_date2 = st.columns([1, 2])
+    with c_date1:
+        st.caption("Filtrar por Data de Emissão")
+        hoje = date.today()
+        # Filtro padrão: Mês Atual
+        data_filtro = st.date_input("Período", [hoje.replace(day=1), hoje])
+
+    # Filtra DF por Data (converte coluna texto para data)
+    if isinstance(data_filtro, list) and len(data_filtro) == 2:
+        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
+        df_exp = df_exp[(df_exp['dt_obj'] >= data_filtro[0]) & (df_exp['dt_obj'] <= data_filtro[1])]
+
+    # --- MÉTRICAS DE RESUMO (KPIs) ---
+    qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
+    qtd_separacao = len(df_exp[df_exp['Status_Atual'] == 'Em Separação'])
+    qtd_faturar = len(df_exp[df_exp['Status_Atual'] == 'Separado'])
+    qtd_finalizados = len(df_exp[df_exp['Status_Atual'] == 'Enviado'])
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🆕 Aguardando", qtd_emitidos)
+    m2.metric("🖐️ Em Separação", qtd_separacao)
+    m3.metric("💲 Para Faturar", qtd_faturar)
+    m4.metric("🚚 Finalizados", qtd_finalizados)
+    
+    st.divider()
+
+    # --- FILTROS VISUAIS ---
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
     filtro_status = c_f2.selectbox("Filtrar Status", ["Todos", "Emitidos", "Separando", "Faturados", "Enviados"])
