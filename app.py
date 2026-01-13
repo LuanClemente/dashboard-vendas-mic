@@ -3,7 +3,6 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import plotly.express as px
 import os
-import json 
 from datetime import date, timedelta
 import calendar
 import numpy as np
@@ -29,11 +28,9 @@ def carregar_imagem_segura(caminho_imagem):
 # ☁️ BANCO DE DADOS (GOOGLE SHEETS)
 # ==============================================================================
 
-# Conecta usando as credenciais do secrets.toml
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def limpar_dado(dado):
-    """Limpa e padroniza textos."""
     if pd.isna(dado): return ""
     texto = str(dado).strip()
     if texto.endswith(".0"):
@@ -42,67 +39,63 @@ def limpar_dado(dado):
 
 def inicializar_e_carregar_usuarios():
     try:
-        # Lê a planilha (sem cache)
         df = conn.read(ttl=0)
+        colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Rep_Selecionado", "Meta_Rep"]
         
-        colunas_necessarias = ["Login", "Senha", "Meta", "Nome"]
-        
-        # Se a planilha estiver vazia ou quebrada, recria
-        if df.empty or not set(colunas_necessarias).issubset(df.columns):
-            df_init = pd.DataFrame(columns=colunas_necessarias)
-            # Cria Admin e a META GLOBAL padrão se estiver vazia
-            if df.empty:
-                df_init = pd.DataFrame([
-                    {"Login": "admin", "Senha": "123", "Meta": 10000.0, "Nome": "Administrador"},
-                    {"Login": "__GLOBAL__", "Senha": "***", "Meta": 100000.0, "Nome": "Meta da Empresa"}
-                ])
+        # Cria a estrutura inicial se estiver vazio
+        if df.empty:
+            df_init = pd.DataFrame([
+                {"Login": "admin", "Senha": "123", "Meta": 10000.0, "Nome": "Administrador", "Rep_Selecionado": "", "Meta_Rep": 0.0},
+                {"Login": "__GLOBAL__", "Senha": "***", "Meta": 100000.0, "Nome": "Meta da Empresa", "Rep_Selecionado": "", "Meta_Rep": 0.0}
+            ])
             conn.update(data=df_init)
             return df_init
+
+        # Atualiza colunas se faltar alguma (ex: Rep_Selecionado)
+        colunas_faltantes = [c for c in colunas_necessarias if c not in df.columns]
+        if colunas_faltantes:
+            for c in colunas_faltantes:
+                df[c] = 0.0 if "Meta" in c else ""
+            conn.update(data=df)
         
-        # Verifica se a linha __GLOBAL__ existe, se não, cria ela
+        # Garante a linha Global
         if "__GLOBAL__" not in df["Login"].astype(str).values:
-            linha_global = pd.DataFrame([{"Login": "__GLOBAL__", "Senha": "***", "Meta": 100000.0, "Nome": "Meta da Empresa"}])
+            linha_global = pd.DataFrame([{
+                "Login": "__GLOBAL__", "Senha": "***", "Meta": 100000.0, "Nome": "Meta da Empresa",
+                "Rep_Selecionado": "", "Meta_Rep": 0.0
+            }])
             df = pd.concat([df, linha_global], ignore_index=True)
             conn.update(data=df)
             
         return df
     except Exception as e:
-        return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome"])
+        return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Rep_Selecionado", "Meta_Rep"])
 
-# --- CARREGA DADOS ---
 df_usuarios = inicializar_e_carregar_usuarios()
-
-# Separa a Meta Geral dos Usuários Normais
-META_GERAL_EMPRESA = 100000.0 # Valor padrão caso falhe
+META_GERAL_EMPRESA = 100000.0
 usuarios_dict = {}
 
 if not df_usuarios.empty:
     for index, row in df_usuarios.iterrows():
         login_limpo = limpar_dado(row["Login"])
-        
-        # Se for a linha especial, guarda na variável de meta
         if login_limpo == "__GLOBAL__":
             META_GERAL_EMPRESA = float(row["Meta"]) if pd.notnull(row["Meta"]) else 100000.0
-        # Se for usuário normal, põe no dicionário de login
         elif login_limpo: 
             usuarios_dict[login_limpo] = {
                 "senha": limpar_dado(row["Senha"]),
                 "meta": float(row["Meta"]) if pd.notnull(row["Meta"]) else 0.0,
-                "nome": str(row["Nome"])
+                "nome": str(row["Nome"]),
+                "rep_selecionado": limpar_dado(row.get("Rep_Selecionado", "")),
+                "meta_rep": float(row.get("Meta_Rep", 0.0)) if pd.notnull(row.get("Meta_Rep")) else 0.0
             }
 
 # --- FUNÇÕES DE ATUALIZAÇÃO ---
-
 def salvar_novo_usuario(login, senha, meta, nome):
     try:
-        # Bloqueia criação de usuário com nome reservado
         if login == "__GLOBAL__": return False
-        
         novo_dado = pd.DataFrame([{
-            "Login": str(login).strip(),
-            "Senha": str(senha).strip(),
-            "Meta": meta,
-            "Nome": nome
+            "Login": str(login).strip(), "Senha": str(senha).strip(), "Meta": meta, "Nome": nome,
+            "Rep_Selecionado": "", "Meta_Rep": 0.0
         }])
         df_atual = conn.read(ttl=0)
         df_final = pd.concat([df_atual, novo_dado], ignore_index=True)
@@ -113,11 +106,9 @@ def salvar_novo_usuario(login, senha, meta, nome):
         return False
 
 def atualizar_campo(login, campo, novo_valor):
-    """Serve tanto para usuário quanto para a Meta Global"""
     try:
         df_atual = conn.read(ttl=0)
         df_atual["Login"] = df_atual["Login"].astype(str).str.strip()
-        
         indices = df_atual.index[df_atual["Login"] == str(login).strip()].tolist()
         if indices:
             idx = indices[0]
@@ -144,7 +135,7 @@ def excluir_usuario(login):
 # 📥 CARGA DE DADOS (CSV VENDAS)
 # ==============================================================================
 def carregar_dados_vendas():
-    if not os.path.exists(ARQUIVO_DADOS): return None, None
+    if not os.path.exists(ARQUIVO_DADOS): return None, None, []
     try:
         try: df = pd.read_csv(ARQUIVO_DADOS, sep=";", encoding="utf-8", on_bad_lines='skip', dtype={'NF': str})
         except: df = pd.read_csv(ARQUIVO_DADOS, sep=";", encoding="latin1", on_bad_lines='skip', dtype={'NF': str})
@@ -155,8 +146,10 @@ def carregar_dados_vendas():
         col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
         col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
         col_vend = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
+        col_rep = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
+        col_cnpj = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
 
-        if not col_valor or not col_data: return None, None
+        if not col_valor or not col_data: return None, None, []
 
         if df[col_valor].dtype == 'O':
             df[col_valor] = df[col_valor].astype(str).str.replace('R$', '').str.strip().str.replace('.', '').str.replace(',', '.')
@@ -167,9 +160,15 @@ def carregar_dados_vendas():
             df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else:
             df['status_ped'] = 'Desconhecido'
+            
+        # Garante que CNPJ seja string para busca
+        if col_cnpj:
+            df[col_cnpj] = df[col_cnpj].astype(str)
 
-        return df, col_vend
-    except: return None, None
+        lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
+
+        return df, col_vend, lista_reps
+    except: return None, None, []
 
 # --- VISUAL ---
 def calcular_dias_uteis_restantes_mes():
@@ -209,161 +208,107 @@ def barra_progresso_linda(atual, meta, titulo="Progresso"):
     st.markdown(html, unsafe_allow_html=True)
 
 # ==============================================================================
-# 🔐 BARRA LATERAL (LOGIN)
+# 🔐 BARRA LATERAL
 # ==============================================================================
 if os.path.exists(ARQUIVO_LOGO):
     img_logo = carregar_imagem_segura(ARQUIVO_LOGO)
-    if img_logo:
-        st.sidebar.image(img_logo, use_container_width=True)
-else:
-    st.sidebar.title("MIC")
+    if img_logo: st.sidebar.image(img_logo, use_container_width=True)
+else: st.sidebar.title("MIC")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔐 Acesso Restrito (Nuvem)")
 
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
+df, col_vend_nome, lista_reps_disponiveis = carregar_dados_vendas()
 
 if st.session_state['usuario_logado'] is None:
-    # --- DESLOGADO ---
     tab_login, tab_cadastro = st.sidebar.tabs(["Entrar", "Cadastrar"])
-    
     with tab_login:
         if st.button("🔄 Atualizar Lista"):
             st.cache_data.clear()
             st.rerun()
-
         u_in = st.text_input("Usuário").strip()
         p_in = st.text_input("Senha", type="password").strip()
-        
         if st.button("Entrar"):
-            if u_in in usuarios_dict:
-                if usuarios_dict[u_in]['senha'] == p_in:
-                    st.session_state['usuario_logado'] = u_in
-                    st.success("Login realizado!")
-                    st.rerun()
-                else:
-                    st.error("Senha incorreta.")
-            else:
-                st.error("Usuário não encontrado.")
-                
+            if u_in in usuarios_dict and usuarios_dict[u_in]['senha'] == p_in:
+                st.session_state['usuario_logado'] = u_in
+                st.rerun()
+            else: st.error("Erro no login.")
     with tab_cadastro:
-        st.info("Cadastre-se para acessar suas metas.")
-        new_user = st.text_input("Novo Usuário (Login)").strip()
+        new_user = st.text_input("Novo Usuário").strip()
         new_pass = st.text_input("Nova Senha", type="password").strip()
         new_name = st.text_input("Nome Completo")
         new_meta = st.number_input("Meta Inicial", value=10000.0)
-        
         if st.button("Criar Vendedor"):
-            if new_user and new_pass:
-                if new_user not in usuarios_dict and new_user != "__GLOBAL__":
-                    with st.spinner("Salvando na nuvem..."):
-                        if salvar_novo_usuario(new_user, new_pass, new_meta, new_name):
-                            st.success("Cadastrado! Faça login.")
-                        else:
-                            st.error("Erro na conexão.")
-                else:
-                    st.error("Usuário já existe.")
-            else:
-                st.warning("Preencha tudo.")
+            if new_user and new_pass and new_user != "__GLOBAL__":
+                if new_user not in usuarios_dict:
+                    if salvar_novo_usuario(new_user, new_pass, new_meta, new_name):
+                        st.success("Cadastrado!")
+                else: st.error("Já existe.")
 else:
-    # --- LOGADO ---
     uid = st.session_state['usuario_logado']
-    
     if uid in usuarios_dict:
         u_data = usuarios_dict[uid]
         st.sidebar.success(f"Olá, {u_data['nome']}")
         
-        with st.sidebar.expander("🎯 Metas", expanded=True):
-            # 1. Meta Individual
-            nm = st.number_input("Minha Meta (R$)", value=float(u_data['meta']))
-            if st.button("Salvar Meta Individual"):
-                with st.spinner("Atualizando nuvem..."):
-                    if atualizar_campo(uid, "Meta", nm):
-                        st.success("Salvo!")
-                        st.rerun()
-            
-            st.markdown("---")
-            
-            # 2. Meta GERAL (Agora editável!)
-            st.markdown("**🏢 Meta da Empresa**")
-            ng = st.number_input("Meta MIC (R$)", value=float(META_GERAL_EMPRESA), key="meta_geral_input")
-            if st.button("💾 Salvar Meta Geral"):
-                with st.spinner("Atualizando Meta da Empresa..."):
-                    # Salva na linha especial __GLOBAL__
-                    if atualizar_campo("__GLOBAL__", "Meta", ng):
-                        st.success("Meta Geral Atualizada!")
-                        st.rerun()
-                    else:
-                        st.error("Erro ao salvar meta geral.")
+        with st.sidebar.expander("🤝 Gestão de Representante"):
+            rep_atual = u_data.get('rep_selecionado', '')
+            meta_rep_atual = u_data.get('meta_rep', 0.0)
+            idx_rep = lista_reps_disponiveis.index(rep_atual) + 1 if rep_atual in lista_reps_disponiveis else 0
+            sel_rep = st.selectbox("Representante:", [""] + lista_reps_disponiveis, index=idx_rep)
+            val_meta_rep = st.number_input("Meta do Rep (R$):", value=meta_rep_atual)
+            if st.button("Salvar Config Rep"):
+                if atualizar_campo(uid, "Rep_Selecionado", sel_rep) and atualizar_campo(uid, "Meta_Rep", val_meta_rep):
+                    st.success("Salvo!")
+                    st.rerun()
 
-        with st.sidebar.expander("⚙️ Minha Conta"):
-            senha_antiga = st.text_input("Senha Atual", type="password").strip()
-            senha_nova = st.text_input("Nova Senha", type="password").strip()
-            
+        with st.sidebar.expander("🎯 Metas Individuais"):
+            nm = st.number_input("Minha Meta (R$)", value=float(u_data['meta']))
+            if st.button("Salvar Meta"):
+                if atualizar_campo(uid, "Meta", nm): st.success("Salvo!"); st.rerun()
+            st.markdown("---")
+            ng = st.number_input("Meta Empresa (R$)", value=float(META_GERAL_EMPRESA))
+            if st.button("Salvar Meta Geral"):
+                if atualizar_campo("__GLOBAL__", "Meta", ng): st.success("Salvo!"); st.rerun()
+
+        with st.sidebar.expander("⚙️ Conta"):
+            s_nova = st.text_input("Nova Senha", type="password")
             if st.button("Mudar Senha"):
-                if senha_antiga == u_data['senha']:
-                    with st.spinner("Atualizando..."):
-                        if atualizar_campo(uid, "Senha", senha_nova):
-                            st.success("Senha alterada!")
-                else:
-                    st.error("Senha atual incorreta!")
-            
+                if atualizar_campo(uid, "Senha", s_nova): st.success("Senha alterada!")
             if st.button("Sair"):
                 st.session_state['usuario_logado'] = None
                 st.rerun()
-    else:
-        st.session_state['usuario_logado'] = None
-        st.rerun()
 
 # ==============================================================================
-# 📊 DASHBOARD PRINCIPAL
+# 📊 DASHBOARD
 # ==============================================================================
 st.title("🚀 Painel de Controle de Vendas")
-
-df, col_vend_nome = carregar_dados_vendas()
 
 if df is not None:
     c1, c2 = st.columns(2)
     status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
-    
     hoje = date.today()
     ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
-    data_inicio_padrao = hoje.replace(day=1)
-    data_fim_padrao = date(hoje.year, hoje.month, ultimo_dia)
-    
-    periodo = c2.date_input("Período", [data_inicio_padrao, data_fim_padrao])
+    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo_dia)])
     
     df_filt = df.copy()
     if isinstance(periodo, list) and len(periodo) == 2:
         df_filt = df_filt[(df_filt['data_final'].dt.date >= periodo[0]) & (df_filt['data_final'].dt.date <= periodo[1])]
-    
     if status_sel != "Todos":
         df_filt = df_filt[df_filt['status_ped'] == status_sel]
 
-    dias_uteis_restantes = calcular_dias_uteis_restantes_mes()
-
+    dias_uteis = calcular_dias_uteis_restantes_mes()
     st.divider()
 
-    # --- META GERAL (Usando a variável carregada do banco) ---
+    # --- META GERAL ---
     st.markdown("## 🏢 META MIC")
     tot_geral = df_filt['valor_final'].sum()
-    # Usa a variável global que veio da planilha
-    meta_emp = META_GERAL_EMPRESA 
-    falta_emp = max(0, meta_emp - tot_geral)
+    falta_emp = max(0, META_GERAL_EMPRESA - tot_geral)
+    barra_progresso_linda(tot_geral, META_GERAL_EMPRESA, "Progresso Geral")
     
-    barra_progresso_linda(tot_geral, meta_emp, titulo="Progresso Geral")
-
     k1, k2, k3 = st.columns(3)
     k1.metric("Vendas Totais", f"R$ {tot_geral:,.2f}")
-    
-    if dias_uteis_restantes > 0 and falta_emp > 0:
-        diaria_geral = falta_emp / dias_uteis_restantes
-        k2.metric("Meta Diária (Restante)", f"R$ {diaria_geral:,.2f}", help=f"{dias_uteis_restantes} dias úteis restantes no mês")
-    elif falta_emp > 0:
-        k2.metric("Meta Diária (Restante)", f"R$ {falta_emp:,.2f}", help="Prazo esgotado ou último dia!")
-    else:
-        k2.metric("Meta Diária (Restante)", "R$ 0,00", "Meta Batida! 🚀")
-
+    k2.metric("Meta Diária (Restante)", f"R$ {(falta_emp / dias_uteis if dias_uteis > 0 else 0):,.2f}", help=f"{dias_uteis} dias úteis")
     k3.metric("Falta Vender", f"R$ {falta_emp:,.2f}")
 
     if st.session_state['usuario_logado']:
@@ -371,54 +316,119 @@ if df is not None:
         uid = st.session_state['usuario_logado']
         if uid in usuarios_dict:
             u_logado = usuarios_dict[uid]
-            st.markdown(f"### 👤 PERFORMANCE: {u_logado['nome']}")
             
+            # === DASHBOARD DO REPRESENTANTE ===
+            rep = u_logado.get('rep_selecionado')
+            meta_rep = u_logado.get('meta_rep', 0.0)
+            
+            if rep and rep in lista_reps_disponiveis:
+                st.markdown(f"### 🤝 REPRESENTANTE: {rep}")
+                df_rep = df_filt[df_filt['Representante'] == rep]
+                tot_rep = df_rep['valor_final'].sum()
+                falta_rep = max(0, meta_rep - tot_rep)
+                
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("Vendas Rep", f"R$ {tot_rep:,.2f}")
+                r2.metric("Meta Rep", f"R$ {meta_rep:,.2f}")
+                r3.metric("Falta", f"R$ {falta_rep:,.2f}")
+                r4.metric("Diária Rep", f"R$ {(falta_rep / dias_uteis if dias_uteis > 0 else 0):,.2f}")
+                barra_progresso_linda(tot_rep, meta_rep, f"Progresso {rep}")
+
+                # NOVO: TOP 10 e BUSCA INTELIGENTE (REPRESENTANTE)
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.markdown("#### 🏆 Top 10 Clientes (Rep)")
+                    if not df_rep.empty:
+                        top_10 = df_rep.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+                        fig = px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
+                        fig.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else: st.warning("Sem vendas no período.")
+                
+                with col2:
+                    st.markdown("#### 📋 Carteira de Clientes (Filtro)")
+                    with st.expander("🔎 Pesquisar Cliente / Ver Detalhes", expanded=True):
+                        busca = st.text_input("Digite Nome ou CNPJ:", placeholder="Ex: Auto Peças ou 00.000.000", key="busca_rep")
+                        
+                        cols_grp = ['Cliente', 'CNPJ'] if 'CNPJ' in df_rep.columns else ['Cliente']
+                        df_lista = df_rep.groupby(cols_grp)['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+                        
+                        if busca:
+                            termo = busca.upper()
+                            mask = df_lista['Cliente'].astype(str).str.upper().str.contains(termo)
+                            if 'CNPJ' in df_lista.columns:
+                                mask |= df_lista['CNPJ'].astype(str).str.contains(termo)
+                            df_lista = df_lista[mask]
+                        
+                        df_lista['Vendas (R$)'] = df_lista['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
+                        st.dataframe(df_lista[['Cliente', 'CNPJ', 'Vendas (R$)']] if 'CNPJ' in df_lista.columns else df_lista, use_container_width=True, hide_index=True)
+
+                st.divider()
+
+            # === DASHBOARD DO VENDEDOR ===
+            st.markdown(f"### 👤 PERFORMANCE INDIVIDUAL: {u_logado['nome']}")
             nome_padrao = u_logado['nome'].split()[0]
-            nome_busca = st.text_input("Filtrar nome (apague se não aparecer nada):", value=nome_padrao)
+            nome_busca = st.text_input("Filtrar meu nome na lista:", value=nome_padrao)
             
             if col_vend_nome:
                 df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
-                
                 tot_u = df_user['valor_final'].sum()
                 meta_u = float(u_logado['meta'])
                 falta_u = max(0, meta_u - tot_u)
                 
-                if dias_uteis_restantes > 0 and falta_u > 0:
-                    diaria_u = falta_u / dias_uteis_restantes
-                elif falta_u > 0:
-                    diaria_u = falta_u
-                else:
-                    diaria_u = 0
-
                 ku1, ku2, ku3, ku4 = st.columns(4)
                 ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
                 ku2.metric("Minha Meta", f"R$ {meta_u:,.2f}")
                 ku3.metric("Falta", f"R$ {falta_u:,.2f}")
-                
-                if diaria_u > 0:
-                    ku4.metric("Meta Diária (Restante)", f"R$ {diaria_u:,.2f}", delta=f"{dias_uteis_restantes} dias úteis")
-                else:
-                    ku4.metric("Status", "Meta Batida! 🎉" if falta_u == 0 else "Mês Fechado")
+                ku4.metric("Minha Diária", f"R$ {(falta_u / dias_uteis if dias_uteis > 0 else 0):,.2f}")
+                barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
 
-                barra_progresso_linda(tot_u, meta_u, titulo="Meu Progresso")
+                # NOVO: TOP 10 e BUSCA INTELIGENTE (INDIVIDUAL)
+                col_u1, col_u2 = st.columns([1, 2])
+                with col_u1:
+                    st.markdown("#### 🏆 Meus Top 10")
+                    if not df_user.empty:
+                        top_10_u = df_user.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
+                        fig_u = px.bar(top_10_u, x='valor_final', y='Cliente', orientation='h', text_auto=True, color='valor_final', color_continuous_scale='Greens')
+                        fig_u.update_layout(yaxis=dict(autorange="reversed"), showlegend=False)
+                        st.plotly_chart(fig_u, use_container_width=True)
+                    else: st.warning("Sem vendas.")
 
-                with st.expander("Ver meus pedidos detalhados"):
+                with col_u2:
+                    st.markdown("#### 📋 Meus Clientes (Filtro)")
+                    with st.expander("🔎 Pesquisar Meus Clientes", expanded=True):
+                        busca_u = st.text_input("Digite Nome ou CNPJ:", placeholder="Filtrar minha carteira...", key="busca_user")
+                        
+                        cols_grp_u = ['Cliente', 'CNPJ'] if 'CNPJ' in df_user.columns else ['Cliente']
+                        df_lista_u = df_user.groupby(cols_grp_u)['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+                        
+                        if busca_u:
+                            termo_u = busca_u.upper()
+                            mask_u = df_lista_u['Cliente'].astype(str).str.upper().str.contains(termo_u)
+                            if 'CNPJ' in df_lista_u.columns:
+                                mask_u |= df_lista_u['CNPJ'].astype(str).str.contains(termo_u)
+                            df_lista_u = df_lista_u[mask_u]
+                        
+                        df_lista_u['Vendas (R$)'] = df_lista_u['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
+                        st.dataframe(df_lista_u[['Cliente', 'CNPJ', 'Vendas (R$)']] if 'CNPJ' in df_lista_u.columns else df_lista_u, use_container_width=True, hide_index=True)
+
+                with st.expander("Ver pedidos detalhados (Linha a Linha)"):
                     cols_show = ['data_final', 'valor_final', 'status_ped']
                     if 'Cliente' in df_user.columns: cols_show.insert(1, 'Cliente')
                     st.dataframe(df_user[cols_show].sort_values('data_final', ascending=False))
-            else:
-                st.warning("Coluna de vendedor não encontrada no CSV.")
+            else: st.warning("Coluna de vendedor não encontrada.")
 
     st.divider()
+    # Ranking e Evolução Geral
     g1, g2 = st.columns(2)
     if col_vend_nome:
         rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).reset_index()
-        fig_r = px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', title="🏆 Top Vendedores", text_auto=True)
+        fig_r = px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', title="🏆 Top Vendedores Geral", text_auto=True)
         fig_r.update_layout(yaxis=dict(autorange="reversed"))
         g1.plotly_chart(fig_r, use_container_width=True)
     
     evol = df_filt.groupby('data_final')['valor_final'].sum().reset_index()
-    fig_l = px.line(evol, x='data_final', y='valor_final', markers=True, title="📈 Evolução Diária")
+    fig_l = px.line(evol, x='data_final', y='valor_final', markers=True, title="📈 Evolução Diária Geral")
     g2.plotly_chart(fig_l, use_container_width=True)
 
 else:
