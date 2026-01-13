@@ -154,16 +154,24 @@ def excluir_usuario(login):
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS (CSV)
+# 📥 CARGA DE DADOS (AGORA DIRETO DO GOOGLE SHEETS)
 # ==============================================================================
 def carregar_dados_vendas():
-    if not os.path.exists(ARQUIVO_DADOS): return None, None, []
-    try:
-        try: df = pd.read_csv(ARQUIVO_DADOS, sep=";", encoding="utf-8", on_bad_lines='skip', dtype={'NF': str})
-        except: df = pd.read_csv(ARQUIVO_DADOS, sep=";", encoding="latin1", on_bad_lines='skip', dtype={'NF': str})
+    # URL da planilha de vendas (Pode ficar aqui ou nos secrets)
+    URL_PLANILHA_VENDAS = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
+    try:
+        # Lê direto do Google (ttl=0 pra não ter cache velho, dados sempre frescos)
+        df = conn.read(spreadsheet=URL_PLANILHA_VENDAS, ttl=0)
+
+        # Se vier vazio, retorna vazio
+        if df.empty: return None, None, []
+
+        # Limpeza e Padronização das Colunas (Remove espaços extras nos nomes)
         df.columns = [c.strip() for c in df.columns]
         cols = df.columns
+        
+        # Identificação inteligente das colunas
         col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
         col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
         col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
@@ -174,24 +182,40 @@ def carregar_dados_vendas():
 
         if not col_valor or not col_data: return None, None, []
 
-        if df[col_valor].dtype == 'O':
-            df[col_valor] = df[col_valor].astype(str).str.replace('R$', '').str.strip().str.replace('.', '').str.replace(',', '.')
-        df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
+        # --- TRATAMENTO DE DADOS (Padrão BR para Python) ---
+        
+        # 1. Tratamento do Valor (R$ 1.000,00 -> 1000.00)
+        # O Google Sheets as vezes manda como texto, as vezes como número. Vamos garantir.
+        if df[col_valor].dtype == 'O': # Se for Texto (Object)
+            df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip()
+            df['valor_final'] = df['valor_final'].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
+        else: # Se já vier numérico do Google
+            df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
+
+        # 2. Tratamento da Data
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
         
+        # 3. Status
         if col_nf:
             df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else:
             df['status_ped'] = 'Desconhecido'
             
+        # 4. Outros campos
         if col_cnpj: df[col_cnpj] = df[col_cnpj].astype(str)
         if not col_pedido and col_nf: col_pedido = col_nf 
         df['id_pedido'] = df[col_pedido] if col_pedido else df.index
 
+        # Lista de Representantes
         lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
 
         return df, col_vend, lista_reps
-    except: return None, None, []
+
+    except Exception as e:
+        # Se der erro (ex: link errado ou permissão), avisa no console mas não quebra o app
+        print(f"Erro ao ler planilha de vendas: {e}") 
+        return None, None, []
 
 # --- VISUAL E UTILITÁRIOS ---
 def calcular_dias_uteis_restantes_mes():
