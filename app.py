@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image 
 import pytz 
 import time
-from gspread.exceptions import APIError # Importante para tratar o erro
+from gspread.exceptions import APIError
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÕES INICIAIS
@@ -57,7 +57,6 @@ def limpar_dado(dado):
 # --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        # Aumentei o TTL para 5 segundos para evitar bloqueio no login
         df = conn.read(ttl=5) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
@@ -127,8 +126,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        # Aumentei TTL para 2 segundos. 
-        # Isso evita que o Google bloqueie se a função for chamada rápido demais
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
@@ -139,7 +136,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
         df_exp = pd.DataFrame(columns=cols_exp)
 
     # SINCRONIZAÇÃO
-    # Envolvemos tudo num Try/Except Gigante para não travar o app se o Google reclamar
     try:
         if df_vendas_atual is not None and not df_vendas_atual.empty:
             df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
@@ -203,29 +199,25 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                         mudou_algo = True
 
             if mudou_algo:
-                # Aqui estava o erro! Se bater o limite de cota, ele explode.
-                # Agora usamos try/except aninhado para essa escrita específica.
                 try:
                     conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
                 except APIError as e:
                     if "429" in str(e):
                         print("⚠️ Limite de API (Update Expedição) atingido. Sincronização pulada nesta rodada.")
                     else:
-                        raise e  # Se for outro erro, aí sim avisa
+                        pass # Ignora erros pontuais
     
     except Exception as e:
-        print(f"Erro silencioso na sincronização (não fatal): {e}")
+        print(f"Erro silencioso na sincronização: {e}")
 
     return df_exp
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, usuario_nome, log_msg):
     try:
-        # Aqui precisamos de dados frescos, então tentamos ler sem cache (ttl=0)
-        # Se falhar por cota, tentamos uma vez com delay
         try:
             df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         except:
-            time.sleep(1) # Espera um segundinho e tenta de novo
+            time.sleep(1) 
             df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
             
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
@@ -253,16 +245,12 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS VENDAS (AGORA COM CACHE REFORÇADO)
+# 📥 CARGA DE DADOS VENDAS
 # ==============================================================================
 
-# O @st.cache_data salva o resultado na memória.
-# ttl=60 significa: "Só vá no Google buscar dados novos a cada 60 segundos"
-# Isso reduz drasticamente o uso da API e o erro 429.
 @st.cache_data(ttl=60, show_spinner="Carregando dados de vendas...")
 def carregar_dados_vendas():
     try:
-        # ttl=0 aqui dentro é ok porque o @st.cache_data gerencia a chamada externa
         df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
         if df.empty: return None, None, [], None, None
 
@@ -279,13 +267,24 @@ def carregar_dados_vendas():
 
         if not col_valor or not col_data: return None, None, [], None, None
 
+        # Tratamento de Valor
         if df[col_valor].dtype == 'O': 
             df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
-        df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
+        # --- CORREÇÃO DO BUG DE DATA AQUI ---
+        # Força converter para String primeiro, remove espaços e usa o formato dd/mm/yyyy
+        df['data_str_temp'] = df[col_data].astype(str).str.strip()
+        
+        # Tenta conversão estrita (dia/mes/ano)
+        df['data_final'] = pd.to_datetime(df['data_str_temp'], format="%d/%m/%Y", errors='coerce')
+        
+        # Fallback: Se falhar (ficar NaT), tenta o parser automático (vai que o excel mandou yyyy-mm-dd)
+        mask_erro = df['data_final'].isna()
+        if mask_erro.any():
+            df.loc[mask_erro, 'data_final'] = pd.to_datetime(df.loc[mask_erro, 'data_str_temp'], dayfirst=True, errors='coerce')
         
         if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else: df['status_ped'] = 'Desconhecido'
@@ -299,7 +298,6 @@ def carregar_dados_vendas():
         return df, col_vend, lista_reps, col_pedido, col_nf
 
     except Exception as e:
-        # Se der erro aqui, a gente retorna None, mas não quebra o app
         print(f"Erro vendas: {e}") 
         return None, None, [], None, None
 
@@ -453,13 +451,28 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
         if col_vend_nome:
             nome_busca = st.text_input("Filtrar meu nome:", value=u_data['nome'].split()[0])
             df_user = df_filt[df_filt[col_vend_nome].astype(str).str.contains(nome_busca, case=False, na=False)]
+            
+            # --- CORREÇÃO: MÉTRICAS DETALHADAS ADICIONADAS ---
             tot_u = df_user['valor_final'].sum()
             meta_u = float(u_data['meta'])
             falta_u = max(0, meta_u - tot_u)
-            ku1, ku2 = st.columns(2)
-            ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
-            ku2.metric("Falta", f"R$ {falta_u:,.2f}")
+            
+            # Calculos extras
+            pedidos_u = df_user['id_pedido'].nunique()
+            ticket_u = tot_u / pedidos_u if pedidos_u > 0 else 0
+            media_nec_u = falta_u / dias_uteis if dias_uteis > 0 else 0
+            media_atual_u = tot_u / dias_passados if dias_passados > 0 else 0
+            delta_u = media_atual_u - media_nec_u
+
             barra_progresso_linda(tot_u, meta_u, "Meu Progresso")
+            
+            # 4 Colunas igual ao topo
+            ku1, ku2, ku3, ku4 = st.columns(4)
+            ku1.metric("Minhas Vendas", f"R$ {tot_u:,.2f}")
+            ku2.metric("Diária Nec.", f"R$ {media_nec_u:,.2f}", delta=f"{delta_u:,.2f}")
+            ku3.metric("Falta", f"R$ {falta_u:,.2f}")
+            ku4.metric("Ticket Médio", f"R$ {ticket_u:,.2f}")
+            
             st.session_state['df_user_cache'] = df_user 
             st.divider()
 
@@ -483,7 +496,8 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
         if not df_filt.empty:
             df_evol = df_filt.copy()
             df_evol['data_plot'] = df_evol['data_final'].dt.date
-            evol = df_evol.groupby('data_plot')['valor_final'].sum().reset_index()
+            # Agrupa e ordena
+            evol = df_evol.groupby('data_plot')['valor_final'].sum().reset_index().sort_values('data_plot')
             st.plotly_chart(px.line(evol, x='data_plot', y='valor_final', markers=True, title="Evolução Diária"), use_container_width=True)
         else:
             st.info("Sem dados para o período selecionado.")
@@ -512,7 +526,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     pode_voltar = user_role in ['ADM', 'Expedicao'] 
 
     with st.spinner("Sincronizando WMS..."):
-        # Se a sincronização falhar, ele usa o que tiver em cache ou mostra vazio
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
     # LÓGICA DE FILTRO DE DATA
@@ -616,10 +629,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 
-# AQUI: Carrega Vendas COM CACHE (para não bater no Google toda hora)
 df, col_vend, lista_reps, col_ped, col_nf = carregar_dados_vendas()
-
-# Se der erro de carregamento (None), cria DataFrames vazios para não quebrar
 if df is None:
     df = pd.DataFrame(columns=["valor_final", "data_final", "status_ped", "id_pedido"])
     lista_reps = []
@@ -681,15 +691,23 @@ else:
             st.markdown("---")
             if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
+    # --- DEBUGGER (Escondido num expander) ---
+    # Se o gráfico continuar vazio, abra isso pra ver se a coluna 'data_final' não está toda "NaT"
+    with st.expander("🕵️ Debug Dados (Apenas para verificação)"):
+        st.write("Amostra dos dados carregados:")
+        st.write(df[['data_final', 'valor_final']].head())
+        st.write("Tipos:")
+        st.write(df.dtypes)
+
     st.divider()
     c_global1, c_global2 = st.columns(2)
     status_sel_global = c_global1.selectbox("Status Vendas", ["Todos", "Faturado", "A Faturar"])
     
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    
     periodo_global = c_global2.date_input("Período de Análise", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
 
+    # Filtro Global
     df_filt_vendas = df.copy()
     if isinstance(periodo_global, list) and len(periodo_global) == 2:
         df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.date >= periodo_global[0]) & (df_filt_vendas['data_final'].dt.date <= periodo_global[1])]
@@ -700,8 +718,12 @@ else:
     if cargo == "Expedicao":
         render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
     else:
-        tab_vendas, tab_exp = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
-        with tab_vendas:
+        # --- CORREÇÃO DA ABA QUE PULA ---
+        # A gente não recria as tabs condicionalmente dentro do if/else
+        # Apenas renderiza o conteúdo
+        tab1, tab2 = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
+        
+        with tab1:
             render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
-        with tab_exp:
+        with tab2:
             render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
