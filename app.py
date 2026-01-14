@@ -259,80 +259,112 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 # 📥 PROCESSAMENTO DE DADOS VENDAS (PADRONIZAÇÃO BLINDADA)
 # ==============================================================================
 def processar_dados_vendas(df):
-    if df is None or df.empty: return None, None, [], None, None
-
-    try:
-        df.columns = [str(c).strip() for c in df.columns]
-        cols = df.columns
-        
-        col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
-        col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
-        col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
-        col_vend_orig = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
-        col_rep_orig = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
-        col_cnpj_orig = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
-        col_cli_orig = next((c for c in cols if 'Cliente' in c or 'Cli' in c), None)
-        col_pedido = next((c for c in cols if 'Pedido' in c), None)
-
-        if not col_valor or not col_data: return None, None, [], None, None
-
-        # Padronização de nomes
-        rename_map = {}
-        if col_cnpj_orig: rename_map[col_cnpj_orig] = 'CNPJ'
-        if col_rep_orig: rename_map[col_rep_orig] = 'Representante'
-        if col_cli_orig: rename_map[col_cli_orig] = 'Cliente'
-        if col_vend_orig: rename_map[col_vend_orig] = 'Vendedor'
-        
-        df.rename(columns=rename_map, inplace=True)
-        
-        # Garante colunas essenciais e PREENCHE VAZIOS para evitar drop no groupby
-        if 'CNPJ' not in df.columns: df['CNPJ'] = '-'
-        df['CNPJ'] = df['CNPJ'].fillna('-').astype(str)
-        
-        if 'Representante' not in df.columns: df['Representante'] = 'Geral'
-        df['Representante'] = df['Representante'].fillna('Geral').astype(str)
-        
-        if 'Cliente' not in df.columns: df['Cliente'] = 'Consumidor'
-        df['Cliente'] = df['Cliente'].fillna('Consumidor').astype(str)
-        
-        if 'Vendedor' not in df.columns: df['Vendedor'] = 'Geral'
-        df['Vendedor'] = df['Vendedor'].fillna('Geral').astype(str)
-
-        col_vend = 'Vendedor'
-        
-        # Limpeza Valores
-        if df[col_valor].dtype == 'O': 
-            df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-            df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
-        else: 
-            df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
-
-        # Limpeza Data
-        df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['data_final'])
-        df['data_processada'] = df['data_final'].dt.normalize()
-        
-        if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
-        else: df['status_ped'] = 'Desconhecido'
-            
-        if not col_pedido and col_nf: col_pedido = col_nf 
-        df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
-        
-        lista_reps = sorted(df['Representante'].unique().tolist())
-
-        return df, col_vend, lista_reps, col_pedido, col_nf
-
-    except Exception as e:
-        print(f"Erro processamento vendas: {e}") 
+    if df is None or df.empty:
         return None, None, [], None, None
 
-# --- VISUAL E UTILITÁRIOS ---
-def calcular_dias_uteis_restantes_mes():
-    hoje = date.today()
-    ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    fim = date(hoje.year, hoje.month, ultimo)
-    if hoje > fim: return 0
-    return max(0, int(np.busday_count(hoje, fim + timedelta(days=1))))
+    try:
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # Remove lixo do Excel (Unnamed: x)
+        df = df.loc[:, ~df.columns.str.contains("^Unnamed", na=False)]
+
+        cols = df.columns
+
+        def pick(cands):
+            for cand in cands:
+                for c in cols:
+                    if cand.lower() in c.lower():
+                        return c
+            return None
+
+        col_valor  = pick(["Valor Líquido", "Valor", "Liq"])
+        col_data   = pick(["Geração", "Geracao", "Emissão", "Emissao", "Data"])
+        col_nf     = pick(["NF", "Nota"])
+        col_vend   = pick(["Vendedor", "Vend"])
+        col_rep    = pick(["Representante", "Rep"])
+        col_cli    = pick(["Cliente", "Cli"])
+        col_cnpj   = pick(["CNPJ", "CGC"])
+        col_pedido = pick(["Pedido"])
+
+        if not col_valor or not col_data:
+            return None, None, [], None, None
+
+        rename = {}
+        if col_cnpj: rename[col_cnpj] = "CNPJ"
+        if col_rep:  rename[col_rep]  = "Representante"
+        if col_cli:  rename[col_cli]  = "Cliente"
+        if col_vend: rename[col_vend] = "Vendedor"
+        if col_pedido: rename[col_pedido] = "Pedido"
+        if col_nf: rename[col_nf] = "NF"
+
+        df.rename(columns=rename, inplace=True)
+
+        for c, default in {
+            "CNPJ": "-",
+            "Representante": "Geral",
+            "Cliente": "Consumidor",
+            "Vendedor": "Geral"
+        }.items():
+            if c not in df.columns:
+                df[c] = default
+            df[c] = df[c].fillna(default).astype(str)
+
+        # ---------- VALOR ----------
+        def parse_valor(v):
+            if pd.isna(v): return 0.0
+            if isinstance(v, (int, float)): return float(v)
+            s = str(v).replace("R$", "").strip()
+            s = s.replace(".", "").replace(",", ".")
+            try: return float(s)
+            except: return 0.0
+
+        df["valor_final"] = df[col_valor].apply(parse_valor)
+
+        # ---------- DATA ----------
+        def parse_data(x):
+            if pd.isna(x): return pd.NaT
+            if isinstance(x, (datetime, date)):
+                return pd.to_datetime(x).normalize()
+            s = str(x).strip()
+            dt = pd.to_datetime(s, format="%d/%m/%Y", errors="coerce")
+            if pd.isna(dt):
+                dt = pd.to_datetime(s, dayfirst=True, errors="coerce")
+            return dt.normalize() if not pd.isna(dt) else pd.NaT
+
+        df["data_processada"] = df[col_data].apply(parse_data)
+        df = df.dropna(subset=["data_processada"])
+
+        # ---------- STATUS ----------
+        def tem_nf(x):
+            if pd.isna(x): return False
+            s = str(x).strip()
+            return s not in ("", "0", "0.0", "nan", "NaN", "None")
+
+        if "NF" in df.columns:
+            df["status_ped"] = df["NF"].apply(lambda x: "Faturado" if tem_nf(x) else "A Faturar")
+        else:
+            df["status_ped"] = "Desconhecido"
+
+        # ---------- ID PEDIDO ----------
+        if "Pedido" in df.columns:
+            df["id_pedido"] = df["Pedido"].astype(str).str.split(".").str[0]
+        elif "NF" in df.columns:
+            df["id_pedido"] = df["NF"].astype(str).str.split(".").str[0]
+        else:
+            df["id_pedido"] = df.index.astype(str)
+
+        df["id_pedido"] = df["id_pedido"].replace({"nan": "", "NaN": ""})
+        df["id_pedido"] = df["id_pedido"].fillna(df.index.astype(str))
+
+        lista_reps = sorted(df["Representante"].unique().tolist())
+
+        return df, "Vendedor", lista_reps, "Pedido" if "Pedido" in df.columns else None, "NF" if "NF" in df.columns else None
+
+    except Exception as e:
+        print("Erro processamento vendas:", e)
+        return None, None, [], None, None
+
 
 def calcular_dias_uteis_passados():
     hoje = date.today()
@@ -424,12 +456,13 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    if isinstance(periodo, list):
-        if len(periodo) == 2:
+    # Streamlit pode retornar o range como tuple (versões mais novas) ou list.
+    if isinstance(periodo, (list, tuple)):
+        if len(periodo) == 2 and periodo[0] and periodo[1]:
             inicio = pd.to_datetime(periodo[0]).normalize()
             fim = pd.to_datetime(periodo[1]).normalize()
             df_filt = df_filt[(df_filt['data_processada'] >= inicio) & (df_filt['data_processada'] <= fim)]
-        elif len(periodo) == 1:
+        elif len(periodo) == 1 and periodo[0]:
             inicio = pd.to_datetime(periodo[0]).normalize()
             df_filt = df_filt[df_filt['data_processada'] >= inicio]
 
@@ -629,14 +662,15 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    if isinstance(data_filtro, list):
+    # Streamlit pode retornar o range como tuple (versões mais novas) ou list.
+    if isinstance(data_filtro, (list, tuple)):
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
         
-        if len(data_filtro) == 2:
+        if len(data_filtro) == 2 and data_filtro[0] and data_filtro[1]:
             inicio = pd.to_datetime(data_filtro[0]).normalize()
             fim = pd.to_datetime(data_filtro[1]).normalize()
             df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
-        elif len(data_filtro) == 1:
+        elif len(data_filtro) == 1 and data_filtro[0]:
             inicio = pd.to_datetime(data_filtro[0]).normalize()
             df_exp = df_exp[df_exp['dt_obj'] >= inicio]
 
