@@ -62,6 +62,7 @@ def limpar_dado(dado):
 @st.cache_data(ttl=600) 
 def carregar_dados_vendas_cache():
     try:
+        # TTL de 600s (10 min) para não estourar a cota da API
         df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=600) 
         if df.empty: return None
         return df
@@ -149,7 +150,8 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=5)
+        # TTL curto (10s) para o WMS ter atualização rápida sem bloquear
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=10)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
         else:
@@ -179,7 +181,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
             for p in novos:
                 try:
                     row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
-                    
                     tem_nf = False
                     if col_nf_vendas:
                         nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
@@ -226,7 +227,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
             try:
                 conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
             except Exception as e:
-                st.warning(f"Aviso: Não foi possível sincronizar o WMS agora (Limite API). Tente em instantes.")
+                pass # Ignora erro de atualização se API estiver cheia
     
     return df_exp
 
@@ -276,17 +277,20 @@ def processar_dados_vendas(df):
 
         if not col_valor or not col_data: return None, None, [], None, None
 
+        # Limpeza Valores
         if df[col_valor].dtype == 'O': 
             df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
-        # === CORREÇÃO CRÍTICA DE DATAS ===
-        # Converte para datetime e remove qualquer erro (NaT)
+        # === CORREÇÃO: DATA ===
+        # 1. Converte a coluna original para datetime (força erros a NaT)
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
-        # Cria uma coluna 'data_ref' que é APENAS DATA (sem hora) para filtrar corretamente
-        df['data_ref'] = df['data_final'].dt.date
+        # 2. Remove linhas com data inválida
+        df = df.dropna(subset=['data_final'])
+        # 3. CRIA A COLUNA DE REFERÊNCIA NORMALIZADA (Sem Hora) para comparação
+        df['data_processada'] = df['data_final'].dt.normalize()
         
         if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else: df['status_ped'] = 'Desconhecido'
@@ -398,15 +402,21 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    # === FILTRO DE DATA CORRIGIDO (USANDO .date) ===
+    # === CORREÇÃO: FILTRO DE DATA BLINDADO ===
     if isinstance(periodo, list):
         if len(periodo) == 2:
-            inicio, fim = periodo
-            # Filtra usando a coluna 'data_ref' que é Date e não Timestamp
-            df_filt = df_filt[(df_filt['data_ref'] >= inicio) & (df_filt['data_ref'] <= fim)]
+            # Converte INPUT para Timestamp normalizado
+            inicio = pd.to_datetime(periodo[0]).normalize()
+            fim = pd.to_datetime(periodo[1]).normalize()
+            
+            # Filtra usando a coluna 'data_processada' que também é Timestamp normalizado
+            df_filt = df_filt[
+                (df_filt['data_processada'] >= inicio) & 
+                (df_filt['data_processada'] <= fim)
+            ]
         elif len(periodo) == 1:
-            inicio = periodo[0]
-            df_filt = df_filt[df_filt['data_ref'] >= inicio]
+            inicio = pd.to_datetime(periodo[0]).normalize()
+            df_filt = df_filt[df_filt['data_processada'] >= inicio]
 
     if status_sel != "Todos":
         df_filt = df_filt[df_filt['status_ped'] == status_sel]
@@ -531,18 +541,16 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
 
     def render_evolucao():
         st.markdown("### 📈 Evolução Diária")
-        # Copia do DF filtrado
         df_ev = df_filt.copy()
         
-        # Garante que 'data_ref' seja usado para agrupar (já é DATE puro)
-        if 'data_ref' in df_ev.columns and not df_ev.empty:
-            evol = df_ev.groupby('data_ref')['valor_final'].sum().reset_index()
+        if not df_ev.empty:
+            # Agrupa por Data Processada (Timestamp Normalizado)
+            evol = df_ev.groupby('data_processada')['valor_final'].sum().reset_index()
             evol.columns = ['Data', 'Valor'] 
             evol = evol.sort_values('Data')
             
             fig = px.line(evol, x='Data', y='Valor', markers=True, text='Valor')
             fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
-            # Força o formato de data no eixo X para ficar bonito
             fig.update_layout(xaxis_tickformat='%d/%m')
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -591,16 +599,17 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    # === FILTRO DE DATA CORRIGIDO NA EXPEDIÇÃO ===
+    # === CORREÇÃO: FILTRO DATA NA EXPEDIÇÃO TAMBÉM ===
     if isinstance(data_filtro, list):
-        # Cria coluna temporária apenas data (Date object)
-        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
+        # Converte coluna para Timestamp normalizado
+        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
         
         if len(data_filtro) == 2:
-            inicio, fim = data_filtro
+            inicio = pd.to_datetime(data_filtro[0]).normalize()
+            fim = pd.to_datetime(data_filtro[1]).normalize()
             df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
         elif len(data_filtro) == 1:
-            inicio = data_filtro[0]
+            inicio = pd.to_datetime(data_filtro[0]).normalize()
             df_exp = df_exp[df_exp['dt_obj'] >= inicio]
 
     # --- KPI: MÉTRICAS ---
