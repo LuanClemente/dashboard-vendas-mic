@@ -58,7 +58,7 @@ def limpar_dado(dado):
     if pd.isna(dado): return ""
     return str(dado).strip().replace(".0", "")
 
-# --- CARGA DE VENDAS (CACHEADO POR 10 MINUTOS PARA NÃO BLOQUEAR A API) ---
+# --- CARGA DE VENDAS (CACHEADO POR 10 MINUTOS) ---
 @st.cache_data(ttl=600) 
 def carregar_dados_vendas_cache():
     try:
@@ -66,14 +66,13 @@ def carregar_dados_vendas_cache():
         if df.empty: return None
         return df
     except Exception as e:
-        # Se der erro de cota, retorna None mas não quebra a tela inteira
         print(f"Erro Cache Vendas: {e}")
         return None
 
 # --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=60) # Cache leve para usuarios
+        df = conn.read(ttl=60)
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         
@@ -141,7 +140,7 @@ def excluir_usuario(login):
     except: return False
 
 # ==============================================================================
-# 📦 LÓGICA DA EXPEDIÇÃO (WMS) - SEM CACHE LONGO (TEMPO REAL)
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS)
 # ==============================================================================
 
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
@@ -150,15 +149,13 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        # TTL curto (5s) apenas para operações WMS
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=5)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
         else:
-            # Garante que todas colunas existam e sejam string para evitar erro de dtype
             for c in cols_exp:
                 if c not in df_exp.columns: df_exp[c] = ""
-            df_exp = df_exp.astype(str) # Evita erro de float vs string
+            df_exp = df_exp.astype(str)
     except:
         df_exp = pd.DataFrame(columns=cols_exp)
 
@@ -182,7 +179,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
             for p in novos:
                 try:
                     row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
-                    
                     tem_nf = False
                     if col_nf_vendas:
                         nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
@@ -242,7 +238,6 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         if idx:
             i = idx[0]
             agora = get_data_hora_sp()
-            
             df_exp.at[i, 'Status_Atual'] = novo_status
             if coluna_data: df_exp.at[i, coluna_data] = agora
             if coluna_user: df_exp.at[i, coluna_user] = usuario_nome
@@ -280,14 +275,12 @@ def processar_dados_vendas(df):
 
         if not col_valor or not col_data: return None, None, [], None, None
 
-        # Limpeza Valor
         if df[col_valor].dtype == 'O': 
             df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
             df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
-        # Limpeza Data - Tenta formatos brasileiros
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
         
         if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
@@ -333,29 +326,7 @@ def barra_progresso_linda(atual, meta, titulo="Progresso"):
     pct = (atual / meta * 100) if meta > 0 else 0
     vis = min(pct, 100) 
     grad = "linear-gradient(90deg, #ff4b4b 0%, #ffca28 50%, #21c354 100%)"
-    
-    html = f"""
-    <div style="margin-bottom: 20px; font-family: sans-serif;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 5px; align-items: flex-end;">
-            <span style="font-weight: bold; font-size: 1.1rem; color: #444;">{titulo}</span>
-            <span style="font-weight: bold; font-size: 1.4rem; color: #333;">{pct:.1f}%</span>
-        </div>
-        <div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);">
-            <div style="width: {vis}%; 
-                        background: {grad}; 
-                        height: 100%; 
-                        border-radius: 20px; 
-                        transition: width 1s ease-in-out;
-                        box-shadow: 2px 0 5px rgba(0,0,0,0.2);">
-            </div>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; margin-top: 5px;">
-            <span>Realizado: R$ {atual:,.2f}</span>
-            <span>Meta: R$ {meta:,.2f}</span>
-        </div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(f"""<div style="margin-bottom: 20px; font-family: sans-serif;"><div style="display: flex; justify-content: space-between; margin-bottom: 5px; align-items: flex-end;"><span style="font-weight: bold; font-size: 1.1rem; color: #444;">{titulo}</span><span style="font-weight: bold; font-size: 1.4rem; color: #333;">{pct:.1f}%</span></div><div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 25px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);"><div style="width: {vis}%; background: {grad}; height: 100%; border-radius: 20px; transition: width 1s ease-in-out; box-shadow: 2px 0 5px rgba(0,0,0,0.2);"></div></div><div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; margin-top: 5px;"><span>Realizado: R$ {atual:,.2f}</span><span>Meta: R$ {meta:,.2f}</span></div></div>""", unsafe_allow_html=True)
 
 def converter_df_para_csv(df):
     return df.to_csv(index=False, sep=";").encode('utf-8')
@@ -413,7 +384,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
     
-    # KEY ÚNICA PARA O DATE INPUT DO DASHBOARD
     periodo = c2.date_input(
         "Período", 
         [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], 
@@ -423,14 +393,18 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    # Lógica segura de filtro de data
-    if isinstance(periodo, tuple) or isinstance(periodo, list):
-        if len(periodo) == 2:
-            inicio, fim = periodo
-            df_filt = df_filt[(df_filt['data_final'].dt.date >= inicio) & (df_filt['data_final'].dt.date <= fim)]
-        elif len(periodo) == 1:
-            inicio = periodo[0]
-            df_filt = df_filt[df_filt['data_final'].dt.date >= inicio]
+    # 🩹 CORREÇÃO DO ERRO TYPE ERROR (DATA): NORMALIZAR PARA TIMESTAMP PANDAS
+    if isinstance(periodo, list) and len(periodo) == 2:
+        inicio = pd.to_datetime(periodo[0])
+        fim = pd.to_datetime(periodo[1])
+        # Filtra convertendo a coluna para normalizada (00:00:00)
+        df_filt = df_filt[
+            (df_filt['data_final'].dt.normalize() >= inicio) & 
+            (df_filt['data_final'].dt.normalize() <= fim)
+        ]
+    elif isinstance(periodo, list) and len(periodo) == 1:
+        inicio = pd.to_datetime(periodo[0])
+        df_filt = df_filt[df_filt['data_final'].dt.normalize() >= inicio]
 
     if status_sel != "Todos":
         df_filt = df_filt[df_filt['status_ped'] == status_sel]
@@ -519,7 +493,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             meta_u = float(u_data['meta'])
             falta_u = max(0, meta_u - tot_u)
             
-            # --- CORREÇÃO: Métricas Diária e Ticket Adicionadas ---
             pedidos_u = df_user['id_pedido'].nunique()
             ticket_u = tot_u / pedidos_u if pedidos_u > 0 else 0
             
@@ -558,7 +531,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         st.markdown("### 📈 Evolução Diária")
         df_ev = df_filt.copy()
         
-        # --- CORREÇÃO EVOLUÇÃO DIÁRIA ---
         # Garante que a coluna seja data e remove NaTs (Erros de conversão)
         df_ev['data_final'] = pd.to_datetime(df_ev['data_final'], errors='coerce')
         df_ev = df_ev.dropna(subset=['data_final'])
@@ -605,14 +577,12 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    # --- FILTRO DE DATA ---
     c_date1, c_date2 = st.columns([1, 2])
     with c_date1:
         st.caption("Filtrar por Data de Emissão")
         hoje = date.today()
         ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
         
-        # KEY ÚNICA PARA O DATE INPUT DA EXPEDIÇÃO (Correção do Erro Duplicate ID)
         data_filtro = st.date_input(
             "Período", 
             [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)], 
@@ -620,17 +590,12 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    # Lógica segura de filtro de data para Expedição
-    if isinstance(data_filtro, tuple) or isinstance(data_filtro, list):
-        # Converter para datetime seguro
-        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
-        
-        if len(data_filtro) == 2:
-            inicio, fim = data_filtro
-            df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
-        elif len(data_filtro) == 1:
-            inicio = data_filtro[0]
-            df_exp = df_exp[df_exp['dt_obj'] >= inicio]
+    # 🩹 CORREÇÃO DO ERRO TYPE ERROR (DATA) NA EXPEDIÇÃO TAMBÉM
+    if isinstance(data_filtro, list) and len(data_filtro) == 2:
+        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
+        inicio = pd.to_datetime(data_filtro[0])
+        fim = pd.to_datetime(data_filtro[1])
+        df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
 
     # --- KPI: MÉTRICAS ---
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
@@ -648,7 +613,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     
     st.divider()
 
-    # --- FILTROS VISUAIS ---
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
     
@@ -763,7 +727,6 @@ if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] 
 raw_vendas = carregar_dados_vendas_cache()
 df, col_vend, lista_reps, col_ped, col_nf = processar_dados_vendas(raw_vendas)
 
-# --- RESTAURAÇÃO: Tela de Login em Abas do Código 1 ---
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
