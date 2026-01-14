@@ -312,11 +312,31 @@ def processar_dados_vendas(df):
         df = df.dropna(subset=['data_final'])
         df['data_processada'] = df['data_final'].dt.normalize()
         
-        if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
+        if col_nf:
+            # Algumas planilhas usam 0/0.0 como "sem NF". Evita classificar errado como faturado.
+            def _tem_nf(x):
+                if pd.isna(x):
+                    return False
+                s = str(x).strip()
+                return s not in ('', '0', '0.0', 'nan', 'NaN', 'None')
+            df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if _tem_nf(x) else 'A Faturar')
         else: df['status_ped'] = 'Desconhecido'
             
-        if not col_pedido and col_nf: col_pedido = col_nf 
-        df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
+        if not col_pedido and col_nf:
+            col_pedido = col_nf
+
+        # Normaliza ID do pedido (evita 123.0, NaN, etc.) para contagens e filtros ficarem corretos.
+        if col_pedido:
+            df['id_pedido'] = (
+                df[col_pedido]
+                .astype(str)
+                .str.strip()
+                .str.split('.')
+                .str[0]
+            )
+            df['id_pedido'] = df['id_pedido'].replace({'nan': '', 'NaN': ''})
+        else:
+            df['id_pedido'] = df.index.astype(str)
         
         lista_reps = sorted(df['Representante'].unique().tolist())
 
@@ -424,12 +444,13 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    if isinstance(periodo, list):
-        if len(periodo) == 2:
+    # Streamlit pode retornar o range como tuple (versões mais novas) ou list.
+    if isinstance(periodo, (list, tuple)):
+        if len(periodo) == 2 and periodo[0] and periodo[1]:
             inicio = pd.to_datetime(periodo[0]).normalize()
             fim = pd.to_datetime(periodo[1]).normalize()
             df_filt = df_filt[(df_filt['data_processada'] >= inicio) & (df_filt['data_processada'] <= fim)]
-        elif len(periodo) == 1:
+        elif len(periodo) == 1 and periodo[0]:
             inicio = pd.to_datetime(periodo[0]).normalize()
             df_filt = df_filt[df_filt['data_processada'] >= inicio]
 
@@ -629,14 +650,15 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    if isinstance(data_filtro, list):
+    # Streamlit pode retornar o range como tuple (versões mais novas) ou list.
+    if isinstance(data_filtro, (list, tuple)):
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
         
-        if len(data_filtro) == 2:
+        if len(data_filtro) == 2 and data_filtro[0] and data_filtro[1]:
             inicio = pd.to_datetime(data_filtro[0]).normalize()
             fim = pd.to_datetime(data_filtro[1]).normalize()
             df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
-        elif len(data_filtro) == 1:
+        elif len(data_filtro) == 1 and data_filtro[0]:
             inicio = pd.to_datetime(data_filtro[0]).normalize()
             df_exp = df_exp[df_exp['dt_obj'] >= inicio]
 
