@@ -174,7 +174,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
         if novos:
             novos_dados = []
             agora = get_data_hora_sp()
-            # Procura colunas padronizadas 'Cliente' e 'Vendedor'
             col_cli = 'Cliente' if 'Cliente' in df_vendas_atual.columns else df_vendas_atual.columns[0]
             col_vend = 'Vendedor' if 'Vendedor' in df_vendas_atual.columns else df_vendas_atual.columns[1]
             
@@ -257,16 +256,15 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 PROCESSAMENTO DE DADOS VENDAS (PADRONIZAÇÃO)
+# 📥 PROCESSAMENTO DE DADOS VENDAS (PADRONIZAÇÃO BLINDADA)
 # ==============================================================================
 def processar_dados_vendas(df):
     if df is None or df.empty: return None, None, [], None, None
 
     try:
-        df.columns = [c.strip() for c in df.columns]
+        df.columns = [str(c).strip() for c in df.columns]
         cols = df.columns
         
-        # Identifica colunas flexivelmente
         col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
         col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
         col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
@@ -278,7 +276,7 @@ def processar_dados_vendas(df):
 
         if not col_valor or not col_data: return None, None, [], None, None
 
-        # --- PADRONIZAÇÃO DE NOMES (CORREÇÃO KEYERROR) ---
+        # Padronização de nomes
         rename_map = {}
         if col_cnpj_orig: rename_map[col_cnpj_orig] = 'CNPJ'
         if col_rep_orig: rename_map[col_rep_orig] = 'Representante'
@@ -287,17 +285,21 @@ def processar_dados_vendas(df):
         
         df.rename(columns=rename_map, inplace=True)
         
-        # Garante que as colunas essenciais existam
+        # Garante colunas essenciais e PREENCHE VAZIOS para evitar drop no groupby
         if 'CNPJ' not in df.columns: df['CNPJ'] = '-'
+        df['CNPJ'] = df['CNPJ'].fillna('-').astype(str)
+        
         if 'Representante' not in df.columns: df['Representante'] = 'Geral'
+        df['Representante'] = df['Representante'].fillna('Geral').astype(str)
+        
         if 'Cliente' not in df.columns: df['Cliente'] = 'Consumidor'
+        df['Cliente'] = df['Cliente'].fillna('Consumidor').astype(str)
+        
         if 'Vendedor' not in df.columns: df['Vendedor'] = 'Geral'
+        df['Vendedor'] = df['Vendedor'].fillna('Geral').astype(str)
 
-        # Atualiza variáveis de referência para os nomes padronizados
         col_vend = 'Vendedor'
-        col_rep = 'Representante'
-        col_cnpj = 'CNPJ'
-
+        
         # Limpeza Valores
         if df[col_valor].dtype == 'O': 
             df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
@@ -316,7 +318,7 @@ def processar_dados_vendas(df):
         if not col_pedido and col_nf: col_pedido = col_nf 
         df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
         
-        lista_reps = sorted(df['Representante'].dropna().unique().tolist())
+        lista_reps = sorted(df['Representante'].unique().tolist())
 
         return df, col_vend, lista_reps, col_pedido, col_nf
 
@@ -499,12 +501,25 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
-                # AGORA FUNCIONA: As colunas Cliente e CNPJ foram padronizadas na carga
-                df_abc = calcular_curva_abc(df_grupo.groupby(['Cliente', 'CNPJ'])['valor_final'].sum().reset_index())
+                
+                # BLINDAGEM CONTRA KEYERROR: AGRUPAMENTO DINÂMICO
+                cols_grp = ['Cliente']
+                if 'CNPJ' in df_grupo.columns: cols_grp.append('CNPJ')
+                
+                df_abc = calcular_curva_abc(df_grupo.groupby(cols_grp)['valor_final'].sum().reset_index())
+                
                 if busca:
-                    df_abc = df_abc[df_abc['Cliente'].str.contains(busca, case=False)]
+                    mask = df_abc['Cliente'].str.contains(busca, case=False)
+                    if 'CNPJ' in df_abc.columns: mask |= df_abc['CNPJ'].str.contains(busca, case=False)
+                    df_abc = df_abc[mask]
+                
                 df_abc['Vendas'] = df_abc['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                st.dataframe(df_abc[['Curva', 'Cliente', 'CNPJ', 'Vendas']], use_container_width=True)
+                
+                # BLINDAGEM CONTRA KEYERROR: SELEÇÃO DINÂMICA
+                cols_show = ['Curva', 'Cliente', 'Vendas']
+                if 'CNPJ' in df_abc.columns: cols_show.insert(2, 'CNPJ')
+                
+                st.dataframe(df_abc[cols_show], use_container_width=True)
             st.divider()
 
     def render_individual():
