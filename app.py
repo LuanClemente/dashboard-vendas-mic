@@ -179,6 +179,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
             for p in novos:
                 try:
                     row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
+                    
                     tem_nf = False
                     if col_nf_vendas:
                         nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
@@ -256,7 +257,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 PROCESSAMENTO DE DADOS VENDAS
+# 📥 PROCESSAMENTO DE DADOS VENDAS (Correção de Datas)
 # ==============================================================================
 def processar_dados_vendas(df):
     if df is None or df.empty: return None, None, [], None, None
@@ -281,7 +282,11 @@ def processar_dados_vendas(df):
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
+        # === CORREÇÃO CRÍTICA DE DATAS ===
+        # Converte para datetime e remove qualquer erro (NaT)
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
+        # Cria uma coluna 'data_ref' que é APENAS DATA (sem hora) para filtrar corretamente
+        df['data_ref'] = df['data_final'].dt.date
         
         if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else: df['status_ped'] = 'Desconhecido'
@@ -348,7 +353,7 @@ def render_bolinhas_status(status):
 
 def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
     if df is None:
-        st.error("⚠️ Dados indisponíveis no momento (Limite API Google). Tente recarregar em 1 minuto.")
+        st.error("⚠️ Dados indisponíveis no momento.")
         return
 
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
@@ -393,18 +398,15 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    # 🩹 CORREÇÃO DO ERRO TYPE ERROR (DATA): NORMALIZAR PARA TIMESTAMP PANDAS
-    if isinstance(periodo, list) and len(periodo) == 2:
-        inicio = pd.to_datetime(periodo[0])
-        fim = pd.to_datetime(periodo[1])
-        # Filtra convertendo a coluna para normalizada (00:00:00)
-        df_filt = df_filt[
-            (df_filt['data_final'].dt.normalize() >= inicio) & 
-            (df_filt['data_final'].dt.normalize() <= fim)
-        ]
-    elif isinstance(periodo, list) and len(periodo) == 1:
-        inicio = pd.to_datetime(periodo[0])
-        df_filt = df_filt[df_filt['data_final'].dt.normalize() >= inicio]
+    # === FILTRO DE DATA CORRIGIDO (USANDO .date) ===
+    if isinstance(periodo, list):
+        if len(periodo) == 2:
+            inicio, fim = periodo
+            # Filtra usando a coluna 'data_ref' que é Date e não Timestamp
+            df_filt = df_filt[(df_filt['data_ref'] >= inicio) & (df_filt['data_ref'] <= fim)]
+        elif len(periodo) == 1:
+            inicio = periodo[0]
+            df_filt = df_filt[df_filt['data_ref'] >= inicio]
 
     if status_sel != "Todos":
         df_filt = df_filt[df_filt['status_ped'] == status_sel]
@@ -529,19 +531,18 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
 
     def render_evolucao():
         st.markdown("### 📈 Evolução Diária")
+        # Copia do DF filtrado
         df_ev = df_filt.copy()
         
-        # Garante que a coluna seja data e remove NaTs (Erros de conversão)
-        df_ev['data_final'] = pd.to_datetime(df_ev['data_final'], errors='coerce')
-        df_ev = df_ev.dropna(subset=['data_final'])
-        
-        if not df_ev.empty:
-            evol = df_ev.groupby(df_ev['data_final'].dt.normalize())['valor_final'].sum().reset_index()
+        # Garante que 'data_ref' seja usado para agrupar (já é DATE puro)
+        if 'data_ref' in df_ev.columns and not df_ev.empty:
+            evol = df_ev.groupby('data_ref')['valor_final'].sum().reset_index()
             evol.columns = ['Data', 'Valor'] 
             evol = evol.sort_values('Data')
             
             fig = px.line(evol, x='Data', y='Valor', markers=True, text='Valor')
             fig.update_traces(textposition="top center", texttemplate='R$ %{y:.2s}')
+            # Força o formato de data no eixo X para ficar bonito
             fig.update_layout(xaxis_tickformat='%d/%m')
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -590,12 +591,17 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    # 🩹 CORREÇÃO DO ERRO TYPE ERROR (DATA) NA EXPEDIÇÃO TAMBÉM
-    if isinstance(data_filtro, list) and len(data_filtro) == 2:
-        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
-        inicio = pd.to_datetime(data_filtro[0])
-        fim = pd.to_datetime(data_filtro[1])
-        df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
+    # === FILTRO DE DATA CORRIGIDO NA EXPEDIÇÃO ===
+    if isinstance(data_filtro, list):
+        # Cria coluna temporária apenas data (Date object)
+        df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.date
+        
+        if len(data_filtro) == 2:
+            inicio, fim = data_filtro
+            df_exp = df_exp[(df_exp['dt_obj'] >= inicio) & (df_exp['dt_obj'] <= fim)]
+        elif len(data_filtro) == 1:
+            inicio = data_filtro[0]
+            df_exp = df_exp[df_exp['dt_obj'] >= inicio]
 
     # --- KPI: MÉTRICAS ---
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
