@@ -341,7 +341,10 @@ def calcular_dias_uteis_passados():
     return max(1, int(np.busday_count(inicio, hoje)))
 
 def calcular_curva_abc(df_input):
-    if df_input.empty: return df_input
+    if df_input.empty: 
+        # RETORNA ESTRUTURA VAZIA SEGURA (CORREÇÃO KEYERROR)
+        return pd.DataFrame(columns=['Cliente', 'CNPJ', 'valor_final', 'acumulado', 'perc', 'Curva'])
+        
     df_abc = df_input.copy().sort_values('valor_final', ascending=False)
     total = df_abc['valor_final'].sum()
     if total == 0: return df_abc
@@ -502,24 +505,26 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
                 
-                # BLINDAGEM CONTRA KEYERROR: AGRUPAMENTO DINÂMICO
+                # BLINDAGEM CONTRA KEYERROR
                 cols_grp = ['Cliente']
                 if 'CNPJ' in df_grupo.columns: cols_grp.append('CNPJ')
                 
                 df_abc = calcular_curva_abc(df_grupo.groupby(cols_grp)['valor_final'].sum().reset_index())
                 
-                if busca:
-                    mask = df_abc['Cliente'].str.contains(busca, case=False)
-                    if 'CNPJ' in df_abc.columns: mask |= df_abc['CNPJ'].str.contains(busca, case=False)
-                    df_abc = df_abc[mask]
-                
-                df_abc['Vendas'] = df_abc['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                
-                # BLINDAGEM CONTRA KEYERROR: SELEÇÃO DINÂMICA
-                cols_show = ['Curva', 'Cliente', 'Vendas']
-                if 'CNPJ' in df_abc.columns: cols_show.insert(2, 'CNPJ')
-                
-                st.dataframe(df_abc[cols_show], use_container_width=True)
+                if not df_abc.empty:
+                    if busca:
+                        mask = df_abc['Cliente'].astype(str).str.contains(busca, case=False)
+                        if 'CNPJ' in df_abc.columns: mask |= df_abc['CNPJ'].astype(str).str.contains(busca, case=False)
+                        df_abc = df_abc[mask]
+                    
+                    df_abc['Vendas'] = df_abc['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
+                    
+                    cols_show = ['Curva', 'Cliente', 'Vendas']
+                    if 'CNPJ' in df_abc.columns: cols_show.insert(2, 'CNPJ')
+                    
+                    st.dataframe(df_abc[cols_show], use_container_width=True)
+                else:
+                    st.info("Nenhum cliente encontrado neste período.")
             st.divider()
 
     def render_individual():
