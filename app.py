@@ -223,7 +223,6 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             if coluna_data: df_exp.at[i, coluna_data] = agora
             if coluna_user: df_exp.at[i, coluna_user] = usuario_nome
             
-            # Correção do Erro de Log: Força conversão para string
             log_antigo = str(df_exp.at[i, 'Log_Historico']) if pd.notnull(df_exp.at[i, 'Log_Historico']) else ""
             if log_antigo == "nan": log_antigo = ""
             
@@ -329,12 +328,14 @@ def render_bolinhas_status(status):
 # 🎨 RENDERIZAÇÃO
 # ==============================================================================
 
-def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponiveis):
+# ALTERAÇÃO: Agora recebe 'df_filt' já filtrado por data e status do lado de fora
+def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disponiveis):
     # Layout Configurado
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
 
+    # EDITOR DE METAS
     with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
         c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
         metas_reps = u_data['metas_reps']
@@ -356,25 +357,15 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
                     del metas_reps[rep_selecionado]
                     if atualizar_campo(uid, "Meta_Rep", metas_reps): st.rerun()
 
+    # REMOVIDO DAQUI O FILTRO DE DATAS (FOI PARA O ESCOPO GLOBAL)
     st.divider()
-    
-    c1, c2 = st.columns(2)
-    status_sel = c1.selectbox("Status", ["Todos", "Faturado", "A Faturar"])
-    hoje = date.today()
-    ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
-    periodo = c2.date_input("Período", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
-    
-    df_filt = df.copy()
-    if isinstance(periodo, list) and len(periodo) == 2:
-        df_filt = df_filt[(df_filt['data_final'].dt.date >= periodo[0]) & (df_filt['data_final'].dt.date <= periodo[1])]
-    if status_sel != "Todos":
-        df_filt = df_filt[df_filt['status_ped'] == status_sel]
     
     dias_uteis = calcular_dias_uteis_restantes_mes()
     dias_passados = calcular_dias_uteis_passados()
 
     def render_meta_mic():
         st.markdown("### 🏢 Meta MIC (Empresa)")
+        # Usa o df_filt global
         tot = df_filt['valor_final'].sum()
         falta = max(0, META_GERAL_EMPRESA - tot)
         ticket = tot / df_filt['id_pedido'].nunique() if df_filt['id_pedido'].nunique() > 0 else 0
@@ -420,7 +411,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             lista_reps = list(metas_reps.keys())
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             if not df_grupo.empty:
-                # CORREÇÃO: Reseta índice para virar coluna
                 top_10 = df_grupo.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
                 st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
@@ -432,7 +422,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
-                # CORREÇÃO: Reset Index já estava, mas garante
                 df_abc = calcular_curva_abc(df_grupo.groupby(['Cliente', 'CNPJ'])['valor_final'].sum().reset_index())
                 if busca:
                     df_abc = df_abc[df_abc['Cliente'].str.contains(busca, case=False)]
@@ -459,7 +448,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         if 'df_user_cache' in st.session_state and not st.session_state['df_user_cache'].empty:
             st.write("**Meus Top 10:**")
             df_u = st.session_state['df_user_cache']
-            # CORREÇÃO: Reset Index
             top_10 = df_u.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(top_10, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
             st.divider()
@@ -467,15 +455,22 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     def render_ranking():
         if col_vend_nome:
             st.markdown("### 🏆 Ranking Geral")
-            # CORREÇÃO: Reset Index
             rank = df_filt.groupby(col_vend_nome)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
             st.plotly_chart(px.bar(rank, x='valor_final', y=col_vend_nome, orientation='h', text_auto=True), use_container_width=True)
             st.divider()
 
     def render_evolucao():
         st.markdown("### 📈 Evolução")
-        evol = df_filt.groupby('data_final')['valor_final'].sum().reset_index()
-        st.plotly_chart(px.line(evol, x='data_final', y='valor_final', markers=True), use_container_width=True)
+        # CORREÇÃO: Agrupa por DATA (dia) explicitamente, evitando problemas de timestamp
+        if not df_filt.empty:
+            df_evol = df_filt.copy()
+            # Garante que é só a data
+            df_evol['data_plot'] = df_evol['data_final'].dt.date
+            evol = df_evol.groupby('data_plot')['valor_final'].sum().reset_index()
+            # Plota usando data_plot
+            st.plotly_chart(px.line(evol, x='data_plot', y='valor_final', markers=True, title="Evolução Diária"), use_container_width=True)
+        else:
+            st.info("Sem dados para o período selecionado.")
         st.divider()
 
     mapa = {
@@ -492,7 +487,8 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     for item in layout_user:
         if item in mapa: mapa[item]()
 
-def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas):
+# ALTERAÇÃO: Recebe 'periodo' para filtrar
+def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas, periodo_selecionado):
     st.markdown("## 📦 Controle de Expedição")
     
     pode_separar = user_role in ['Expedicao', 'ADM']
@@ -502,6 +498,17 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 
     with st.spinner("Sincronizando WMS..."):
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
+
+    # LÓGICA DE FILTRO DE DATA NA EXPEDIÇÃO
+    # Converte 'Data_Emitido' (string) para datetime para poder filtrar
+    if not df_exp.empty:
+        # Formato esperado: dd/mm/yyyy HH:MM
+        df_exp['data_obj'] = pd.to_datetime(df_exp['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.date
+        
+        # Aplica o filtro se o período for válido
+        if isinstance(periodo_selecionado, list) and len(periodo_selecionado) == 2:
+            inicio, fim = periodo_selecionado[0], periodo_selecionado[1]
+            df_exp = df_exp[(df_exp['data_obj'] >= inicio) & (df_exp['data_obj'] <= fim)]
 
     c_f1, c_f2 = st.columns([3, 1])
     termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
@@ -525,6 +532,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     
     df_view = df_view.iloc[::-1]
 
+    st.info(f"Mostrando {len(df_view)} pedidos no período selecionado.")
     st.divider()
     
     for i, row in df_view.iterrows():
@@ -548,7 +556,6 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                 if row['Data_Enviado']: txt_time += f"🚚 Env: {row['Data_Enviado']} ({row['User_Enviado']})"
                 st.caption(txt_time)
                 
-                # Correção do Log (Converte para string segura antes do replace)
                 log_txt = str(row['Log_Historico']) if pd.notnull(row['Log_Historico']) else ""
                 if log_txt:
                     with st.popover("📜 Ver Histórico"):
@@ -574,7 +581,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                         if st.button("💲 Marcar Faturado", key=f"s3_{ped}"):
                             atualizar_status_expedicao(ped, "Faturado", "Data_Faturado", "User_Faturado", user_name, "Marcou Faturado"); st.rerun()
                     if pode_voltar and st.button("↩️ Voltar Sep.", key=f"v2_{ped}"):
-                         atualizar_status_expedicao(ped, "Em Separação", "", "", user_name, "Voltou para Separação"); st.rerun()
+                             atualizar_status_expedicao(ped, "Em Separação", "", "", user_name, "Voltou para Separação"); st.rerun()
                 
                 elif status == "Faturado":
                     if pode_enviar:
@@ -582,12 +589,12 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
                             atualizar_status_expedicao(ped, "Enviado", "Data_Enviado", "User_Enviado", user_name, "Despachou"); st.rerun()
                     else: st.success("Pronto p/ Envio")
                     if pode_voltar and st.button("↩️ Voltar Fat.", key=f"v3_{ped}"):
-                         atualizar_status_expedicao(ped, "Separado", "", "", user_name, "Cancelou Faturamento (Voltou)"); st.rerun()
+                             atualizar_status_expedicao(ped, "Separado", "", "", user_name, "Cancelou Faturamento (Voltou)"); st.rerun()
                 
                 elif status == "Enviado":
                     st.success("Concluído")
                     if pode_voltar and st.button("↩️ Voltar Envio", key=f"v4_{ped}"):
-                         atualizar_status_expedicao(ped, "Faturado", "", "", user_name, "Cancelou Envio (Voltou)"); st.rerun()
+                             atualizar_status_expedicao(ped, "Faturado", "", "", user_name, "Cancelou Envio (Voltou)"); st.rerun()
 
             st.markdown("---")
 
@@ -655,11 +662,36 @@ else:
             st.markdown("---")
             if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
+    # === 🔥 MUDANÇA: FILTRO GLOBAL (AFETA TUDO) ===
+    st.divider()
+    c_global1, c_global2 = st.columns(2)
+    status_sel_global = c_global1.selectbox("Status Vendas", ["Todos", "Faturado", "A Faturar"])
+    
+    # Define padrão para o mês atual
+    hoje = date.today()
+    ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
+    
+    # AQUI: Se você estiver testando com dados de 2026 e o hoje for 2025, mude esse default
+    periodo_global = c_global2.date_input("Período de Análise", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
+
+    # Prepara o df_filt (VENDAS) aqui fora para passar para a dashboard
+    df_filt_vendas = df.copy()
+    if isinstance(periodo_global, list) and len(periodo_global) == 2:
+        df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.date >= periodo_global[0]) & (df_filt_vendas['data_final'].dt.date <= periodo_global[1])]
+    
+    if status_sel_global != "Todos":
+        df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
+
+    # === FIM DO FILTRO GLOBAL ===
+
     if cargo == "Expedicao":
-        render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf)
+        # Passa o 'periodo_global' para a expedição
+        render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
     else:
         tab_vendas, tab_exp = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
         with tab_vendas:
-            render_dashboard_vendas(u_data, uid, df, col_vend, lista_reps)
+            # Passa o 'df_filt_vendas' já filtrado
+            render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
         with tab_exp:
-            render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf)
+            # Passa o 'periodo_global' para a expedição
+            render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
