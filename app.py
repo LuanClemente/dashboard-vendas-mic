@@ -183,7 +183,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                     tem_nf = False
                     if col_nf_vendas:
                         nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
-                        tem_nf = nf_val and nf_val.lower() != 'nan'
+                        tem_nf = nf_val and nf_val.lower() != 'nan' and nf_val != ''
                     
                     status_ini = 'Faturado' if tem_nf else 'Emitido'
                     data_fat = agora if tem_nf else ''
@@ -256,27 +256,39 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 PROCESSAMENTO DE DADOS VENDAS (PADRONIZAÇÃO BLINDADA)
+# 📥 PROCESSAMENTO DE DADOS VENDAS (FIXED FOR LISTA.CSV)
 # ==============================================================================
 def processar_dados_vendas(df):
     if df is None or df.empty: return None, None, [], None, None
 
     try:
-        df.columns = [str(c).strip() for c in df.columns]
+        # 1. Limpeza agressiva dos nomes das colunas
+        df.columns = [str(c).strip().replace(";", "") for c in df.columns]
         cols = df.columns
         
+        # 2. Identificação das colunas (Baseado no seu lista.csv)
+        # Procura "Valor" ou "Liq" para valor
         col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
+        # Procura "Gera", "Data" ou "Emis" para data (Seu arquivo tem "Geração")
         col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
+        # Procura "NF"
         col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
+        # Procura "Vendedor"
         col_vend_orig = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
+        # Procura "Representante"
         col_rep_orig = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
+        # Procura "CNPJ" ou "CGC"
         col_cnpj_orig = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
+        # Procura "Cliente"
         col_cli_orig = next((c for c in cols if 'Cliente' in c or 'Cli' in c), None)
+        # Procura "Pedido"
         col_pedido = next((c for c in cols if 'Pedido' in c), None)
 
-        if not col_valor or not col_data: return None, None, [], None, None
+        if not col_valor or not col_data: 
+            st.error("Colunas essenciais (Valor/Data) não encontradas.")
+            return None, None, [], None, None
 
-        # Padronização de nomes
+        # 3. Renomeação para padrão interno
         rename_map = {}
         if col_cnpj_orig: rename_map[col_cnpj_orig] = 'CNPJ'
         if col_rep_orig: rename_map[col_rep_orig] = 'Representante'
@@ -285,35 +297,44 @@ def processar_dados_vendas(df):
         
         df.rename(columns=rename_map, inplace=True)
         
-        # Garante colunas essenciais e PREENCHE VAZIOS para evitar drop no groupby
+        # 4. GARANTIA DAS COLUNAS (Evita KeyError)
         if 'CNPJ' not in df.columns: df['CNPJ'] = '-'
-        df['CNPJ'] = df['CNPJ'].fillna('-').astype(str)
+        df['CNPJ'] = df['CNPJ'].fillna('-').astype(str).str.strip()
         
         if 'Representante' not in df.columns: df['Representante'] = 'Geral'
-        df['Representante'] = df['Representante'].fillna('Geral').astype(str)
+        df['Representante'] = df['Representante'].fillna('Geral').astype(str).str.strip()
         
         if 'Cliente' not in df.columns: df['Cliente'] = 'Consumidor'
-        df['Cliente'] = df['Cliente'].fillna('Consumidor').astype(str)
+        df['Cliente'] = df['Cliente'].fillna('Consumidor').astype(str).str.strip()
         
         if 'Vendedor' not in df.columns: df['Vendedor'] = 'Geral'
-        df['Vendedor'] = df['Vendedor'].fillna('Geral').astype(str)
+        df['Vendedor'] = df['Vendedor'].fillna('Geral').astype(str).str.strip()
 
         col_vend = 'Vendedor'
         
-        # Limpeza Valores
+        # 5. LIMPEZA DE VALORES (BR: 1.000,00 -> US: 1000.00)
+        # Remove R$, espaços, troca ponto por nada e vírgula por ponto
         if df[col_valor].dtype == 'O': 
-            df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False) \
+                                                         .str.strip() \
+                                                         .str.replace('.', '', regex=False) \
+                                                         .str.replace(',', '.', regex=False)
             df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
-        # Limpeza Data
+        # 6. LIMPEZA DE DATA (DD/MM/AAAA)
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
+        # Remove linhas sem data válida
         df = df.dropna(subset=['data_final'])
         df['data_processada'] = df['data_final'].dt.normalize()
         
-        if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
-        else: df['status_ped'] = 'Desconhecido'
+        # 7. LOGICA DE STATUS
+        if col_nf: 
+            # Se NF não for vazio/null -> Faturado, senão A Faturar
+            df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
+        else: 
+            df['status_ped'] = 'Desconhecido'
             
         if not col_pedido and col_nf: col_pedido = col_nf 
         df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
@@ -342,7 +363,7 @@ def calcular_dias_uteis_passados():
 
 def calcular_curva_abc(df_input):
     if df_input.empty: 
-        # RETORNA ESTRUTURA VAZIA SEGURA (CORREÇÃO KEYERROR)
+        # Retorna estrutura segura vazia
         return pd.DataFrame(columns=['Cliente', 'CNPJ', 'valor_final', 'acumulado', 'perc', 'Curva'])
         
     df_abc = df_input.copy().sort_values('valor_final', ascending=False)
@@ -505,24 +526,17 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
                 
-                # BLINDAGEM CONTRA KEYERROR
-                cols_grp = ['Cliente']
-                if 'CNPJ' in df_grupo.columns: cols_grp.append('CNPJ')
-                
+                cols_grp = ['Cliente', 'CNPJ'] 
                 df_abc = calcular_curva_abc(df_grupo.groupby(cols_grp)['valor_final'].sum().reset_index())
                 
                 if not df_abc.empty:
                     if busca:
-                        mask = df_abc['Cliente'].astype(str).str.contains(busca, case=False)
-                        if 'CNPJ' in df_abc.columns: mask |= df_abc['CNPJ'].astype(str).str.contains(busca, case=False)
+                        mask = df_abc['Cliente'].astype(str).str.contains(busca, case=False) | \
+                               df_abc['CNPJ'].astype(str).str.contains(busca, case=False)
                         df_abc = df_abc[mask]
                     
                     df_abc['Vendas'] = df_abc['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                    
-                    cols_show = ['Curva', 'Cliente', 'Vendas']
-                    if 'CNPJ' in df_abc.columns: cols_show.insert(2, 'CNPJ')
-                    
-                    st.dataframe(df_abc[cols_show], use_container_width=True)
+                    st.dataframe(df_abc[['Curva', 'Cliente', 'CNPJ', 'Vendas']], use_container_width=True)
                 else:
                     st.info("Nenhum cliente encontrado neste período.")
             st.divider()
@@ -770,6 +784,9 @@ if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] 
 raw_vendas = carregar_dados_vendas_cache()
 df, col_vend, lista_reps, col_ped, col_nf = processar_dados_vendas(raw_vendas)
 
+if df is not None and not df.empty:
+    st.info(f"Carregadas {len(df)} vendas.") # DEBUG VISUAL
+
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
@@ -858,3 +875,4 @@ else:
             render_dashboard_vendas(u_data, uid, df, col_vend, lista_reps)
         with tab_exp:
             render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf)
+            
