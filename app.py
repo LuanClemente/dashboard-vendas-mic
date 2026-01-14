@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image 
 import pytz 
 import time
+from gspread.exceptions import APIError # Importante para tratar o erro
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÕES INICIAIS
@@ -18,8 +19,6 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
-
-# URL DA PLANILHA MESTRA
 URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
 st.markdown("""
@@ -58,7 +57,8 @@ def limpar_dado(dado):
 # --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=0) 
+        # Aumentei o TTL para 5 segundos para evitar bloqueio no login
+        df = conn.read(ttl=5) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         
@@ -117,14 +117,6 @@ def salvar_novo_usuario(login, senha, meta, nome):
         return True
     except: return False
 
-def excluir_usuario(login):
-    try:
-        df = conn.read(ttl=0)
-        df = df[df["Login"].astype(str).str.strip() != str(login).strip()]
-        conn.update(data=df)
-        return True
-    except: return False
-
 # ==============================================================================
 # 📦 LÓGICA DA EXPEDIÇÃO (WMS)
 # ==============================================================================
@@ -135,7 +127,9 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        # Aumentei TTL para 2 segundos. 
+        # Isso evita que o Google bloqueie se a função for chamada rápido demais
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
         else:
@@ -145,73 +139,95 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
         df_exp = pd.DataFrame(columns=cols_exp)
 
     # SINCRONIZAÇÃO
-    if df_vendas_atual is not None and not df_vendas_atual.empty:
-        df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
-        df_vendas_atual[col_pedido_vendas] = df_vendas_atual[col_pedido_vendas].astype(str).str.split('.').str[0].str.strip()
-        
-        pedidos_exp = set(df_exp['Pedido'].unique())
-        pedidos_vendas = set(df_vendas_atual[col_pedido_vendas].unique())
-        novos = [p for p in (pedidos_vendas - pedidos_exp) if p and p.lower() != 'nan']
-        
-        mudou_algo = False
-        
-        if novos:
-            novos_dados = []
-            agora = get_data_hora_sp()
-            col_cli = next((c for c in df_vendas_atual.columns if 'Cliente' in c), 'Cliente')
-            col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
+    # Envolvemos tudo num Try/Except Gigante para não travar o app se o Google reclamar
+    try:
+        if df_vendas_atual is not None and not df_vendas_atual.empty:
+            df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
+            df_vendas_atual[col_pedido_vendas] = df_vendas_atual[col_pedido_vendas].astype(str).str.split('.').str[0].str.strip()
             
-            for p in novos:
-                row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
+            pedidos_exp = set(df_exp['Pedido'].unique())
+            pedidos_vendas = set(df_vendas_atual[col_pedido_vendas].unique())
+            novos = [p for p in (pedidos_vendas - pedidos_exp) if p and p.lower() != 'nan']
+            
+            mudou_algo = False
+            
+            # PARTE 1: Novos Pedidos
+            if novos:
+                novos_dados = []
+                agora = get_data_hora_sp()
+                col_cli = next((c for c in df_vendas_atual.columns if 'Cliente' in c), 'Cliente')
+                col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
                 
-                tem_nf = False
-                if col_nf_vendas:
-                    nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
-                    tem_nf = nf_val and nf_val.lower() != 'nan'
+                for p in novos:
+                    row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
+                    
+                    tem_nf = False
+                    if col_nf_vendas:
+                        nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
+                        tem_nf = nf_val and nf_val.lower() != 'nan'
+                    
+                    status_ini = 'Faturado' if tem_nf else 'Emitido'
+                    data_fat = agora if tem_nf else ''
+                    log_ini = f"[{agora}] Pedido importado como {status_ini}"
+
+                    novos_dados.append({
+                        'Pedido': str(p),
+                        'Cliente': str(row_venda.get(col_cli, '')),
+                        'Vendedor': str(row_venda.get(col_vend, '')),
+                        'Status_Atual': status_ini,
+                        'Data_Emitido': agora,
+                        'Data_Separacao': '', 'Data_Separado': '', 
+                        'Data_Faturado': data_fat, 'Data_Enviado': '',
+                        'User_Separacao': '', 'User_Separado': '', 'User_Faturado': 'Sistema' if tem_nf else '', 'User_Enviado': '',
+                        'Log_Historico': log_ini
+                    })
                 
-                status_ini = 'Faturado' if tem_nf else 'Emitido'
-                data_fat = agora if tem_nf else ''
-                log_ini = f"[{agora}] Pedido importado como {status_ini}"
-
-                novos_dados.append({
-                    'Pedido': str(p),
-                    'Cliente': str(row_venda.get(col_cli, '')),
-                    'Vendedor': str(row_venda.get(col_vend, '')),
-                    'Status_Atual': status_ini,
-                    'Data_Emitido': agora,
-                    'Data_Separacao': '', 'Data_Separado': '', 
-                    'Data_Faturado': data_fat, 'Data_Enviado': '',
-                    'User_Separacao': '', 'User_Separado': '', 'User_Faturado': 'Sistema' if tem_nf else '', 'User_Enviado': '',
-                    'Log_Historico': log_ini
-                })
-            
-            if novos_dados:
-                df_exp = pd.concat([df_exp, pd.DataFrame(novos_dados)], ignore_index=True)
-                mudou_algo = True
-
-        if col_nf_vendas:
-            vendas_com_nf = df_vendas_atual[df_vendas_atual[col_nf_vendas].notna() & (df_vendas_atual[col_nf_vendas].astype(str).str.strip() != '')]
-            lista_pedidos_com_nf = set(vendas_com_nf[col_pedido_vendas].unique())
-            
-            for i, row in df_exp.iterrows():
-                ped = row['Pedido']
-                status = row['Status_Atual']
-                if ped in lista_pedidos_com_nf and status in ['Emitido', 'Em Separação', 'Separado']:
-                    agora = get_data_hora_sp()
-                    df_exp.at[i, 'Status_Atual'] = 'Faturado'
-                    if not df_exp.at[i, 'Data_Faturado']: df_exp.at[i, 'Data_Faturado'] = agora
-                    df_exp.at[i, 'User_Faturado'] = 'Sistema (Auto)'
-                    df_exp.at[i, 'Log_Historico'] = str(row.get('Log_Historico','')) + f" | [{agora}] Auto-Faturado por NF detectada"
+                if novos_dados:
+                    df_exp = pd.concat([df_exp, pd.DataFrame(novos_dados)], ignore_index=True)
                     mudou_algo = True
 
-        if mudou_algo:
-            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
+            # PARTE 2: Atualização Automática de NFs
+            if col_nf_vendas:
+                vendas_com_nf = df_vendas_atual[df_vendas_atual[col_nf_vendas].notna() & (df_vendas_atual[col_nf_vendas].astype(str).str.strip() != '')]
+                lista_pedidos_com_nf = set(vendas_com_nf[col_pedido_vendas].unique())
+                
+                for i, row in df_exp.iterrows():
+                    ped = row['Pedido']
+                    status = row['Status_Atual']
+                    if ped in lista_pedidos_com_nf and status in ['Emitido', 'Em Separação', 'Separado']:
+                        agora = get_data_hora_sp()
+                        df_exp.at[i, 'Status_Atual'] = 'Faturado'
+                        if not df_exp.at[i, 'Data_Faturado']: df_exp.at[i, 'Data_Faturado'] = agora
+                        df_exp.at[i, 'User_Faturado'] = 'Sistema (Auto)'
+                        df_exp.at[i, 'Log_Historico'] = str(row.get('Log_Historico','')) + f" | [{agora}] Auto-Faturado por NF detectada"
+                        mudou_algo = True
+
+            if mudou_algo:
+                # Aqui estava o erro! Se bater o limite de cota, ele explode.
+                # Agora usamos try/except aninhado para essa escrita específica.
+                try:
+                    conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
+                except APIError as e:
+                    if "429" in str(e):
+                        print("⚠️ Limite de API (Update Expedição) atingido. Sincronização pulada nesta rodada.")
+                    else:
+                        raise e  # Se for outro erro, aí sim avisa
     
+    except Exception as e:
+        print(f"Erro silencioso na sincronização (não fatal): {e}")
+
     return df_exp
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, usuario_nome, log_msg):
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        # Aqui precisamos de dados frescos, então tentamos ler sem cache (ttl=0)
+        # Se falhar por cota, tentamos uma vez com delay
+        try:
+            df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        except:
+            time.sleep(1) # Espera um segundinho e tenta de novo
+            df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+            
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
         
@@ -233,14 +249,20 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             return True
         return False
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro ao atualizar status: {e}. Tente novamente em alguns segundos.")
         return False
 
 # ==============================================================================
-# 📥 CARGA DE DADOS VENDAS
+# 📥 CARGA DE DADOS VENDAS (AGORA COM CACHE REFORÇADO)
 # ==============================================================================
+
+# O @st.cache_data salva o resultado na memória.
+# ttl=60 significa: "Só vá no Google buscar dados novos a cada 60 segundos"
+# Isso reduz drasticamente o uso da API e o erro 429.
+@st.cache_data(ttl=60, show_spinner="Carregando dados de vendas...")
 def carregar_dados_vendas():
     try:
+        # ttl=0 aqui dentro é ok porque o @st.cache_data gerencia a chamada externa
         df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
         if df.empty: return None, None, [], None, None
 
@@ -277,6 +299,7 @@ def carregar_dados_vendas():
         return df, col_vend, lista_reps, col_pedido, col_nf
 
     except Exception as e:
+        # Se der erro aqui, a gente retorna None, mas não quebra o app
         print(f"Erro vendas: {e}") 
         return None, None, [], None, None
 
@@ -328,14 +351,12 @@ def render_bolinhas_status(status):
 # 🎨 RENDERIZAÇÃO
 # ==============================================================================
 
-# ALTERAÇÃO: Agora recebe 'df_filt' já filtrado por data e status do lado de fora
 def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disponiveis):
     # Layout Configurado
     layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
     layout_user = u_data.get('layout', '').split(',')
     layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
 
-    # EDITOR DE METAS
     with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
         c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
         metas_reps = u_data['metas_reps']
@@ -357,7 +378,6 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
                     del metas_reps[rep_selecionado]
                     if atualizar_campo(uid, "Meta_Rep", metas_reps): st.rerun()
 
-    # REMOVIDO DAQUI O FILTRO DE DATAS (FOI PARA O ESCOPO GLOBAL)
     st.divider()
     
     dias_uteis = calcular_dias_uteis_restantes_mes()
@@ -365,7 +385,6 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
 
     def render_meta_mic():
         st.markdown("### 🏢 Meta MIC (Empresa)")
-        # Usa o df_filt global
         tot = df_filt['valor_final'].sum()
         falta = max(0, META_GERAL_EMPRESA - tot)
         ticket = tot / df_filt['id_pedido'].nunique() if df_filt['id_pedido'].nunique() > 0 else 0
@@ -461,13 +480,10 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
 
     def render_evolucao():
         st.markdown("### 📈 Evolução")
-        # CORREÇÃO: Agrupa por DATA (dia) explicitamente, evitando problemas de timestamp
         if not df_filt.empty:
             df_evol = df_filt.copy()
-            # Garante que é só a data
             df_evol['data_plot'] = df_evol['data_final'].dt.date
             evol = df_evol.groupby('data_plot')['valor_final'].sum().reset_index()
-            # Plota usando data_plot
             st.plotly_chart(px.line(evol, x='data_plot', y='valor_final', markers=True, title="Evolução Diária"), use_container_width=True)
         else:
             st.info("Sem dados para o período selecionado.")
@@ -487,7 +503,6 @@ def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disp
     for item in layout_user:
         if item in mapa: mapa[item]()
 
-# ALTERAÇÃO: Recebe 'periodo' para filtrar
 def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas, periodo_selecionado):
     st.markdown("## 📦 Controle de Expedição")
     
@@ -497,15 +512,12 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
     pode_voltar = user_role in ['ADM', 'Expedicao'] 
 
     with st.spinner("Sincronizando WMS..."):
+        # Se a sincronização falhar, ele usa o que tiver em cache ou mostra vazio
         df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    # LÓGICA DE FILTRO DE DATA NA EXPEDIÇÃO
-    # Converte 'Data_Emitido' (string) para datetime para poder filtrar
+    # LÓGICA DE FILTRO DE DATA
     if not df_exp.empty:
-        # Formato esperado: dd/mm/yyyy HH:MM
         df_exp['data_obj'] = pd.to_datetime(df_exp['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.date
-        
-        # Aplica o filtro se o período for válido
         if isinstance(periodo_selecionado, list) and len(periodo_selecionado) == 2:
             inicio, fim = periodo_selecionado[0], periodo_selecionado[1]
             df_exp = df_exp[(df_exp['data_obj'] >= inicio) & (df_exp['data_obj'] <= fim)]
@@ -603,7 +615,14 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 # ==============================================================================
 
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
+
+# AQUI: Carrega Vendas COM CACHE (para não bater no Google toda hora)
 df, col_vend, lista_reps, col_ped, col_nf = carregar_dados_vendas()
+
+# Se der erro de carregamento (None), cria DataFrames vazios para não quebrar
+if df is None:
+    df = pd.DataFrame(columns=["valor_final", "data_final", "status_ped", "id_pedido"])
+    lista_reps = []
 
 if st.session_state['usuario_logado'] is None:
     c1, c2, c3 = st.columns([3, 2, 3])
@@ -662,19 +681,15 @@ else:
             st.markdown("---")
             if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
-    # === 🔥 MUDANÇA: FILTRO GLOBAL (AFETA TUDO) ===
     st.divider()
     c_global1, c_global2 = st.columns(2)
     status_sel_global = c_global1.selectbox("Status Vendas", ["Todos", "Faturado", "A Faturar"])
     
-    # Define padrão para o mês atual
     hoje = date.today()
     ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
     
-    # AQUI: Se você estiver testando com dados de 2026 e o hoje for 2025, mude esse default
     periodo_global = c_global2.date_input("Período de Análise", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
 
-    # Prepara o df_filt (VENDAS) aqui fora para passar para a dashboard
     df_filt_vendas = df.copy()
     if isinstance(periodo_global, list) and len(periodo_global) == 2:
         df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.date >= periodo_global[0]) & (df_filt_vendas['data_final'].dt.date <= periodo_global[1])]
@@ -682,16 +697,11 @@ else:
     if status_sel_global != "Todos":
         df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
 
-    # === FIM DO FILTRO GLOBAL ===
-
     if cargo == "Expedicao":
-        # Passa o 'periodo_global' para a expedição
         render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
     else:
         tab_vendas, tab_exp = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
         with tab_vendas:
-            # Passa o 'df_filt_vendas' já filtrado
             render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
         with tab_exp:
-            # Passa o 'periodo_global' para a expedição
             render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
