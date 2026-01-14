@@ -1128,9 +1128,3 @@ else:
             render_dashboard_vendas(u_data, uid, df, col_vend, lista_reps)
         with tab_exp:
             render_expedicao(cargo, u_data["nome"], df, col_ped, col_nf)
-'''
-outpath = "/mnt/data/app_corrigido_comentado.py"
-with open(outpath, "w", encoding="utf-8") as f:
-    f.write(code)
-outpath, os.path.getsize(outpath)
-
