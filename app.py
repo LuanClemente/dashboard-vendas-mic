@@ -150,7 +150,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        # TTL curto (10s) para o WMS ter atualização rápida sem bloquear
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=10)
         if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
             df_exp = pd.DataFrame(columns=cols_exp)
@@ -175,8 +174,9 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
         if novos:
             novos_dados = []
             agora = get_data_hora_sp()
-            col_cli = next((c for c in df_vendas_atual.columns if 'Cliente' in c), 'Cliente')
-            col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
+            # Procura colunas padronizadas 'Cliente' e 'Vendedor'
+            col_cli = 'Cliente' if 'Cliente' in df_vendas_atual.columns else df_vendas_atual.columns[0]
+            col_vend = 'Vendedor' if 'Vendedor' in df_vendas_atual.columns else df_vendas_atual.columns[1]
             
             for p in novos:
                 try:
@@ -226,8 +226,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
         if mudou_algo:
             try:
                 conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
-            except Exception as e:
-                pass # Ignora erro de atualização se API estiver cheia
+            except: pass
     
     return df_exp
 
@@ -258,7 +257,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
         return False
 
 # ==============================================================================
-# 📥 PROCESSAMENTO DE DADOS VENDAS (Correção de Datas)
+# 📥 PROCESSAMENTO DE DADOS VENDAS (PADRONIZAÇÃO)
 # ==============================================================================
 def processar_dados_vendas(df):
     if df is None or df.empty: return None, None, [], None, None
@@ -267,15 +266,37 @@ def processar_dados_vendas(df):
         df.columns = [c.strip() for c in df.columns]
         cols = df.columns
         
+        # Identifica colunas flexivelmente
         col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
         col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
         col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
-        col_vend = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
-        col_rep = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
-        col_cnpj = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
+        col_vend_orig = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
+        col_rep_orig = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
+        col_cnpj_orig = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
+        col_cli_orig = next((c for c in cols if 'Cliente' in c or 'Cli' in c), None)
         col_pedido = next((c for c in cols if 'Pedido' in c), None)
 
         if not col_valor or not col_data: return None, None, [], None, None
+
+        # --- PADRONIZAÇÃO DE NOMES (CORREÇÃO KEYERROR) ---
+        rename_map = {}
+        if col_cnpj_orig: rename_map[col_cnpj_orig] = 'CNPJ'
+        if col_rep_orig: rename_map[col_rep_orig] = 'Representante'
+        if col_cli_orig: rename_map[col_cli_orig] = 'Cliente'
+        if col_vend_orig: rename_map[col_vend_orig] = 'Vendedor'
+        
+        df.rename(columns=rename_map, inplace=True)
+        
+        # Garante que as colunas essenciais existam
+        if 'CNPJ' not in df.columns: df['CNPJ'] = '-'
+        if 'Representante' not in df.columns: df['Representante'] = 'Geral'
+        if 'Cliente' not in df.columns: df['Cliente'] = 'Consumidor'
+        if 'Vendedor' not in df.columns: df['Vendedor'] = 'Geral'
+
+        # Atualiza variáveis de referência para os nomes padronizados
+        col_vend = 'Vendedor'
+        col_rep = 'Representante'
+        col_cnpj = 'CNPJ'
 
         # Limpeza Valores
         if df[col_valor].dtype == 'O': 
@@ -284,22 +305,18 @@ def processar_dados_vendas(df):
         else: 
             df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
 
-        # === CORREÇÃO: DATA ===
-        # 1. Converte a coluna original para datetime (força erros a NaT)
+        # Limpeza Data
         df['data_final'] = pd.to_datetime(df[col_data], dayfirst=True, errors='coerce')
-        # 2. Remove linhas com data inválida
         df = df.dropna(subset=['data_final'])
-        # 3. CRIA A COLUNA DE REFERÊNCIA NORMALIZADA (Sem Hora) para comparação
         df['data_processada'] = df['data_final'].dt.normalize()
         
         if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
         else: df['status_ped'] = 'Desconhecido'
             
-        if col_cnpj: df[col_cnpj] = df[col_cnpj].astype(str)
         if not col_pedido and col_nf: col_pedido = col_nf 
-        
         df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
-        lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
+        
+        lista_reps = sorted(df['Representante'].dropna().unique().tolist())
 
         return df, col_vend, lista_reps, col_pedido, col_nf
 
@@ -402,18 +419,11 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
     
     df_filt = df.copy()
     
-    # === CORREÇÃO: FILTRO DE DATA BLINDADO ===
     if isinstance(periodo, list):
         if len(periodo) == 2:
-            # Converte INPUT para Timestamp normalizado
             inicio = pd.to_datetime(periodo[0]).normalize()
             fim = pd.to_datetime(periodo[1]).normalize()
-            
-            # Filtra usando a coluna 'data_processada' que também é Timestamp normalizado
-            df_filt = df_filt[
-                (df_filt['data_processada'] >= inicio) & 
-                (df_filt['data_processada'] <= fim)
-            ]
+            df_filt = df_filt[(df_filt['data_processada'] >= inicio) & (df_filt['data_processada'] <= fim)]
         elif len(periodo) == 1:
             inicio = pd.to_datetime(periodo[0]).normalize()
             df_filt = df_filt[df_filt['data_processada'] >= inicio]
@@ -489,6 +499,7 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
             df_grupo = df_filt[df_filt['Representante'].isin(lista_reps)]
             with st.expander("🔎 Filtrar Carteira", expanded=False):
                 busca = st.text_input("Buscar:", key="b_sup")
+                # AGORA FUNCIONA: As colunas Cliente e CNPJ foram padronizadas na carga
                 df_abc = calcular_curva_abc(df_grupo.groupby(['Cliente', 'CNPJ'])['valor_final'].sum().reset_index())
                 if busca:
                     df_abc = df_abc[df_abc['Cliente'].str.contains(busca, case=False)]
@@ -544,7 +555,6 @@ def render_dashboard_vendas(u_data, uid, df, col_vend_nome, lista_reps_disponive
         df_ev = df_filt.copy()
         
         if not df_ev.empty:
-            # Agrupa por Data Processada (Timestamp Normalizado)
             evol = df_ev.groupby('data_processada')['valor_final'].sum().reset_index()
             evol.columns = ['Data', 'Valor'] 
             evol = evol.sort_values('Data')
@@ -599,9 +609,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             key="data_input_expedicao"
         )
 
-    # === CORREÇÃO: FILTRO DATA NA EXPEDIÇÃO TAMBÉM ===
     if isinstance(data_filtro, list):
-        # Converte coluna para Timestamp normalizado
         df_exp['dt_obj'] = pd.to_datetime(df_exp['Data_Emitido'], dayfirst=True, errors='coerce').dt.normalize()
         
         if len(data_filtro) == 2:
@@ -612,12 +620,12 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
             inicio = pd.to_datetime(data_filtro[0]).normalize()
             df_exp = df_exp[df_exp['dt_obj'] >= inicio]
 
-    # --- KPI: MÉTRICAS ---
+    # --- KPI ---
     qtd_emitidos = len(df_exp[df_exp['Status_Atual'] == 'Emitido'])
     qtd_separacao = len(df_exp[df_exp['Status_Atual'] == 'Em Separação'])
-    qtd_separados = len(df_exp[df_exp['Status_Atual'] == 'Separado']) # Para Faturar
-    qtd_faturados = len(df_exp[df_exp['Status_Atual'] == 'Faturado']) # Aguardando Envio
-    qtd_finalizados = len(df_exp[df_exp['Status_Atual'] == 'Enviado']) # Finalizados
+    qtd_separados = len(df_exp[df_exp['Status_Atual'] == 'Separado']) 
+    qtd_faturados = len(df_exp[df_exp['Status_Atual'] == 'Faturado']) 
+    qtd_finalizados = len(df_exp[df_exp['Status_Atual'] == 'Enviado']) 
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("🆕 Aguardando", qtd_emitidos)
