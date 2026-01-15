@@ -330,7 +330,9 @@ def extrair_periodo(periodo):
     if isinstance(periodo, (list, tuple)) and len(periodo) == 2:
         inicio, fim = periodo
         if inicio and fim:
-            return inicio, fim
+            inicio_ts = pd.to_datetime(inicio).normalize()
+            fim_ts = pd.to_datetime(fim).normalize()
+            return inicio_ts, fim_ts
     return None
 
 # ==============================================================================
@@ -468,7 +470,7 @@ def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_ven
 
     # LÓGICA DE FILTRO DE DATA
     if not df_exp.empty:
-        df_exp['data_obj'] = pd.to_datetime(df_exp['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.date
+        df_exp['data_obj'] = pd.to_datetime(df_exp['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.normalize()
         periodo = extrair_periodo(periodo_selecionado)
         if periodo:
             inicio, fim = periodo
@@ -651,7 +653,7 @@ else:
     periodo = extrair_periodo(periodo_global)
     if periodo:
         inicio, fim = periodo
-        df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.date >= inicio) & (df_filt_vendas['data_final'].dt.date <= fim)]
+        df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.normalize() >= inicio) & (df_filt_vendas['data_final'].dt.normalize() <= fim)]
     
     if status_sel_global != "Todos":
         df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
