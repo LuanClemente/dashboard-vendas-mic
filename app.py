@@ -13,9 +13,9 @@ import time
 from gspread.exceptions import APIError
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÕES E ESTILO
+# ⚙️ CONFIGURAÇÕES INICIAIS
 # ==============================================================================
-st.set_page_config(page_title="Sistema MIC", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon="🏢", initial_sidebar_state="collapsed")
 
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
@@ -26,77 +26,82 @@ st.markdown("""
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         [data-testid="stSidebar"] {display: none;}
-        .stApp {margin-top: -40px;}
+        .stApp {margin-top: -50px;}
+        div[data-testid="column"] {background-color: transparent;}
         div[data-testid="stVerticalBlock"] > div {
-            border-radius: 8px;
-            padding: 4px;
+            border-radius: 10px;
+            padding: 5px;
         }
     </style>
 """, unsafe_allow_html=True)
 
-def carregar_imagem_segura(caminho):
-    try: return Image.open(caminho)
+def carregar_imagem_segura(caminho_imagem):
+    try:
+        img = Image.open(caminho_imagem)
+        return img
     except: return None
+
+# ==============================================================================
+# ☁️ BANCO DE DADOS
+# ==============================================================================
+
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data_hora_sp():
     return datetime.now(FUSO_SP).strftime("%d/%m/%Y %H:%M")
 
-def barra_progresso_linda(atual, meta, titulo="Progresso"):
-    pct = (atual / meta * 100) if meta > 0 else 0
-    vis = min(pct, 100) 
-    grad = "linear-gradient(90deg, #ff4b4b 0%, #ffca28 50%, #21c354 100%)"
-    st.markdown(f"""<div style="margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: flex-end;"><span style="font-weight: bold; font-size: 1rem; color: #444;">{titulo}</span><span style="font-weight: bold; font-size: 1.2rem; color: #333;">{pct:.1f}%</span></div><div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 20px;"><div style="width: {vis}%; background: {grad}; height: 100%; border-radius: 20px; transition: width 1s ease-in-out;"></div></div><div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #666; margin-top: 3px;"><span>R$ {atual:,.2f}</span><span>Meta: R$ {meta:,.2f}</span></div></div>""", unsafe_allow_html=True)
+def limpar_dado(dado):
+    if pd.isna(dado): return ""
+    return str(dado).strip().replace(".0", "")
 
-# ==============================================================================
-# 💾 CARGA DE DADOS (CORE)
-# ==============================================================================
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def inicializar_usuarios():
+# --- GESTÃO DE USUÁRIOS ---
+def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=5)
-        cols = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
-        if df.empty: return pd.DataFrame(columns=cols)
-        # Garante colunas
+        df = conn.read(ttl=5) 
+        colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
+        if df.empty: return pd.DataFrame(columns=colunas_necessarias)
+        
         changed = False
-        for c in cols:
-            if c not in df.columns: 
+        for c in colunas_necessarias:
+            if c not in df.columns:
                 df[c] = "{}" if "Meta" in c else ""
                 changed = True
         if changed: conn.update(data=df)
         return df
     except: return pd.DataFrame(columns=["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"])
 
-df_usuarios = inicializar_usuarios()
+df_usuarios = inicializar_e_carregar_usuarios()
+META_GERAL_EMPRESA = 100000.0
 usuarios_dict = {}
-META_GLOBAL = 100000.0
 
 if not df_usuarios.empty:
-    for _, row in df_usuarios.iterrows():
-        login = str(row["Login"]).strip()
+    for index, row in df_usuarios.iterrows():
+        login = limpar_dado(row["Login"])
         if login == "__GLOBAL__":
-            META_GLOBAL = float(row["Meta"]) if pd.notnull(row["Meta"]) else 100000.0
-        elif login:
-            try: metas = json.loads(str(row.get("Meta_Rep", "{}")))
-            except: metas = {}
-            if not isinstance(metas, dict): metas = {}
+            META_GERAL_EMPRESA = float(row["Meta"]) if pd.notnull(row["Meta"]) else 100000.0
+        elif login: 
+            meta_rep_raw = row.get("Meta_Rep", "{}")
+            try: metas_reps_dict = json.loads(str(meta_rep_raw)) if meta_rep_raw else {}
+            except: metas_reps_dict = {}
+            if not isinstance(metas_reps_dict, dict): metas_reps_dict = {}
+
             usuarios_dict[login] = {
-                "senha": str(row["Senha"]).strip().replace(".0", ""),
+                "senha": limpar_dado(row["Senha"]),
                 "meta": float(row["Meta"]) if pd.notnull(row["Meta"]) else 0.0,
                 "nome": str(row["Nome"]),
-                "cargo": str(row.get("Cargo", "Vendedor")).strip(),
-                "metas_reps": metas,
+                "cargo": limpar_dado(row.get("Cargo", "Vendedor")),
+                "metas_reps": metas_reps_dict, 
                 "layout": str(row.get("Config_Layout", ""))
             }
 
-def atualizar_campo(login, campo, valor):
+def atualizar_campo(login, campo, novo_valor):
     try:
         df = conn.read(ttl=0)
         df["Login"] = df["Login"].astype(str).str.strip()
         idx = df.index[df["Login"] == str(login).strip()].tolist()
         if idx:
-            if isinstance(valor, dict): valor = json.dumps(valor)
-            df.at[idx[0], campo] = valor
+            if isinstance(novo_valor, dict): novo_valor = json.dumps(novo_valor)
+            df.at[idx[0], campo] = novo_valor
             conn.update(data=df.fillna(""))
             return True
         return False
@@ -111,405 +116,555 @@ def salvar_novo_usuario(login, senha, meta, nome):
         return True
     except: return False
 
-# ------------------------------------------------------------------------------
-# 📦 CARGA DE DADOS BLINDADA
-# ------------------------------------------------------------------------------
-@st.cache_data(ttl=60, show_spinner="Lendo planilha...")
-def carregar_dados_vendas():
-    try:
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0)
-        if df.empty: return None, None, [], None, None
-        
-        # Limpeza de colunas
-        df.columns = [c.strip() for c in df.columns]
-        
-        # Identificação de Colunas
-        c_val = next((c for c in df.columns if 'Valor' in c or 'Liq' in c), None)
-        c_dat = next((c for c in df.columns if 'Gera' in c or 'Data' in c), None)
-        c_nf  = next((c for c in df.columns if 'NF' in c or 'Nota' in c), None)
-        c_vnd = next((c for c in df.columns if 'Vendedor' in c or 'Vend' in c), None)
-        c_rep = next((c for c in df.columns if 'Representante' in c or 'Rep' in c), None)
-        c_ped = next((c for c in df.columns if 'Pedido' in c), None)
-        c_cli = next((c for c in df.columns if 'Cliente' in c), None)
-        c_cnpj= next((c for c in df.columns if 'CNPJ' in c), None)
+# ==============================================================================
+# 📦 LÓGICA DA EXPEDIÇÃO (WMS)
+# ==============================================================================
 
-        if not c_val or not c_dat: return None, None, [], None, None
-
-        # Tratamento Valor
-        if df[c_val].dtype == 'O':
-            df['valor_final'] = df[c_val].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-            df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
-        else:
-            df['valor_final'] = pd.to_numeric(df[c_val], errors='coerce').fillna(0)
-
-        # Tratamento Data (A CORREÇÃO DO FILTRO TÁ AQUI)
-        # O Pandas as vezes se confunde. Vamos forçar DD/MM/AAAA
-        df['data_str'] = df[c_dat].astype(str).str.strip()
-        df['data_final'] = pd.to_datetime(df['data_str'], format="%d/%m/%Y", errors='coerce')
-        
-        # Fallback se der erro
-        mask_nat = df['data_final'].isna()
-        if mask_nat.any():
-            df.loc[mask_nat, 'data_final'] = pd.to_datetime(df.loc[mask_nat, 'data_str'], dayfirst=True, errors='coerce')
-
-        # Status
-        if c_nf: 
-            df['status_ped'] = df[c_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
-        else: 
-            df['status_ped'] = 'Desconhecido'
-
-        # IDs e Reps
-        if not c_ped and c_nf: c_ped = c_nf
-        df['id_pedido'] = df[c_ped].fillna(0) if c_ped else df.index
-        
-        # Renomear colunas essenciais pra facilitar
-        df['Cliente'] = df[c_cli] if c_cli else 'Consumidor'
-        df['Representante'] = df[c_rep] if c_rep else 'Direto'
-        if c_cnpj: df['CNPJ'] = df[c_cnpj]
-        
-        lista_reps = sorted(df['Representante'].dropna().unique().tolist())
-        
-        return df, c_vnd, lista_reps, c_ped, c_nf
-
-    except Exception as e:
-        print(f"Erro Vendas: {e}")
-        return None, None, [], None, None
-
-def carregar_dados_expedicao(df_vendas, c_ped_v, c_nf_v):
-    cols = ['Pedido','Cliente','Vendedor','Status_Atual','Data_Emitido','Data_Separacao','Data_Separado','Data_Faturado','Data_Enviado','User_Separacao','User_Separado','User_Faturado','User_Enviado','Log_Historico']
+def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
+    cols_exp = ['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 
+                'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado',
+                'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
+    
     try:
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
-        if df_exp.empty: df_exp = pd.DataFrame(columns=cols)
+        if df_exp.empty or not set(['Pedido']).issubset(df_exp.columns):
+            df_exp = pd.DataFrame(columns=cols_exp)
         else:
-            for c in cols: 
+            for c in cols_exp:
                 if c not in df_exp.columns: df_exp[c] = ""
-    except: df_exp = pd.DataFrame(columns=cols)
+    except:
+        df_exp = pd.DataFrame(columns=cols_exp)
 
+    # SINCRONIZAÇÃO
     try:
-        # Sincronia
-        if df_vendas is not None and not df_vendas.empty:
+        if df_vendas_atual is not None and not df_vendas_atual.empty:
             df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
-            df_vendas['id_match'] = df_vendas['id_pedido'].astype(str).str.split('.').str[0].str.strip()
+            df_vendas_atual[col_pedido_vendas] = df_vendas_atual[col_pedido_vendas].astype(str).str.split('.').str[0].str.strip()
             
-            p_exp = set(df_exp['Pedido'].unique())
-            p_vnd = set(df_vendas['id_match'].unique())
-            novos = [p for p in (p_vnd - p_exp) if p and p != 'nan']
+            pedidos_exp = set(df_exp['Pedido'].unique())
+            pedidos_vendas = set(df_vendas_atual[col_pedido_vendas].unique())
+            novos = [p for p in (pedidos_vendas - pedidos_exp) if p and p.lower() != 'nan']
             
-            changed = False
+            mudou_algo = False
+            
+            # PARTE 1: Novos Pedidos
             if novos:
-                rows = []
+                novos_dados = []
                 agora = get_data_hora_sp()
-                col_c = next((c for c in df_vendas.columns if 'Cliente' in c), 'Cliente')
-                col_v = next((c for c in df_vendas.columns if 'Vendedor' in c), 'Vendedor')
+                col_cli = next((c for c in df_vendas_atual.columns if 'Cliente' in c), 'Cliente')
+                col_vend = next((c for c in df_vendas_atual.columns if 'Vendedor' in c), 'Vendedor')
                 
                 for p in novos:
-                    rv = df_vendas[df_vendas['id_match'] == p].iloc[0]
-                    tem_nf = False
-                    if c_nf_v:
-                        val = str(rv.get(c_nf_v,'')).strip()
-                        tem_nf = val and val.lower()!='nan'
+                    row_venda = df_vendas_atual[df_vendas_atual[col_pedido_vendas] == p].iloc[0]
                     
-                    stt = 'Faturado' if tem_nf else 'Emitido'
-                    rows.append({
+                    tem_nf = False
+                    if col_nf_vendas:
+                        nf_val = str(row_venda.get(col_nf_vendas, '')).strip()
+                        tem_nf = nf_val and nf_val.lower() != 'nan'
+                    
+                    status_ini = 'Faturado' if tem_nf else 'Emitido'
+                    data_fat = agora if tem_nf else ''
+                    log_ini = f"[{agora}] Pedido importado como {status_ini}"
+
+                    novos_dados.append({
                         'Pedido': str(p),
-                        'Cliente': str(rv.get(col_c,'')),
-                        'Vendedor': str(rv.get(col_v,'')),
-                        'Status_Atual': stt,
+                        'Cliente': str(row_venda.get(col_cli, '')),
+                        'Vendedor': str(row_venda.get(col_vend, '')),
+                        'Status_Atual': status_ini,
                         'Data_Emitido': agora,
-                        'Data_Faturado': agora if tem_nf else '',
-                        'User_Faturado': 'Sistema' if tem_nf else '',
-                        'Log_Historico': f"[{agora}] Importado como {stt}"
+                        'Data_Separacao': '', 'Data_Separado': '', 
+                        'Data_Faturado': data_fat, 'Data_Enviado': '',
+                        'User_Separacao': '', 'User_Separado': '', 'User_Faturado': 'Sistema' if tem_nf else '', 'User_Enviado': '',
+                        'Log_Historico': log_ini
                     })
-                if rows:
-                    df_exp = pd.concat([df_exp, pd.DataFrame(rows)], ignore_index=True)
-                    changed = True
-            
-            # Atualiza NF auto
-            if c_nf_v:
-                v_com_nf = df_vendas[df_vendas[c_nf_v].notna() & (df_vendas[c_nf_v].astype(str).str.strip()!='')]
-                l_nf = set(v_com_nf['id_match'].unique())
-                for i, r in df_exp.iterrows():
-                    if r['Pedido'] in l_nf and r['Status_Atual'] in ['Emitido','Em Separação','Separado']:
-                        df_exp.at[i,'Status_Atual'] = 'Faturado'
-                        if not df_exp.at[i,'Data_Faturado']: df_exp.at[i,'Data_Faturado'] = get_data_hora_sp()
-                        df_exp.at[i,'User_Faturado'] = 'Sistema'
-                        changed = True
-            
-            if changed:
-                try: conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
-                except APIError as e: 
-                    if "429" not in str(e): pass
+                
+                if novos_dados:
+                    df_exp = pd.concat([df_exp, pd.DataFrame(novos_dados)], ignore_index=True)
+                    mudou_algo = True
 
-    except Exception as e: print(e)
-    return df_exp
+            # PARTE 2: Atualização Automática de NFs
+            if col_nf_vendas:
+                vendas_com_nf = df_vendas_atual[df_vendas_atual[col_nf_vendas].notna() & (df_vendas_atual[col_nf_vendas].astype(str).str.strip() != '')]
+                lista_pedidos_com_nf = set(vendas_com_nf[col_pedido_vendas].unique())
+                
+                for i, row in df_exp.iterrows():
+                    ped = row['Pedido']
+                    status = row['Status_Atual']
+                    if ped in lista_pedidos_com_nf and status in ['Emitido', 'Em Separação', 'Separado']:
+                        agora = get_data_hora_sp()
+                        df_exp.at[i, 'Status_Atual'] = 'Faturado'
+                        if not df_exp.at[i, 'Data_Faturado']: df_exp.at[i, 'Data_Faturado'] = agora
+                        df_exp.at[i, 'User_Faturado'] = 'Sistema (Auto)'
+                        df_exp.at[i, 'Log_Historico'] = str(row.get('Log_Historico','')) + f" | [{agora}] Auto-Faturado por NF detectada"
+                        mudou_algo = True
 
-def atualizar_status(ped, sts, c_dat, c_usr, usr, log):
+            if mudou_algo:
+                conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
+            return df_exp
+        return df_exp
+    except:
+        return df_exp
+
+def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, usuario_nome, log_msg):
     try:
-        try: df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
-        except: time.sleep(1); df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
-        
-        df['Pedido'] = df['Pedido'].astype(str).str.split('.').str[0].str.strip()
-        idx = df.index[df['Pedido'] == str(ped)].tolist()
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        if df_exp.empty: return False
+        df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
+        idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
         if idx:
             i = idx[0]
             agora = get_data_hora_sp()
-            df.at[i, 'Status_Atual'] = sts
-            if c_dat: df.at[i, c_dat] = agora
-            if c_usr: df.at[i, c_usr] = usr
-            lant = str(df.at[i, 'Log_Historico'])
-            if lant == 'nan': lant = ""
-            df.at[i, 'Log_Historico'] = lant + f" | [{agora}-{usr}] {log}"
-            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df.fillna(""))
+            df_exp.at[i, 'Status_Atual'] = novo_status
+            if coluna_data: df_exp.at[i, coluna_data] = agora
+            if coluna_user: df_exp.at[i, coluna_user] = usuario_nome
+            df_exp.at[i, 'Log_Historico'] = str(df_exp.at[i, 'Log_Historico']) + f" | [{agora}] {log_msg}"
+            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
             return True
         return False
-    except: return False
+    except Exception as e:
+        st.error(f"Erro ao atualizar status: {e}. Tente novamente em alguns segundos.")
+        return False
 
 # ==============================================================================
-# 📊 DASHBOARD VENDAS
+# 📥 CARGA DE DADOS VENDAS
 # ==============================================================================
-def render_dash(u_data, uid, df_f, c_vend, l_reps):
-    # Layout simplificado
-    l_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Ranking Geral"]
-    l_user = u_data.get('layout','').split(',')
-    l_user = [x for x in l_user if x] if l_user else l_padrao
 
-    # Editor Metas
-    with st.expander("⚙️ Configurar Metas Representantes"):
-        c1, c2, c3 = st.columns([2,1,1])
-        rep = c1.selectbox("Representante", [""] + sorted(l_reps))
-        m_reps = u_data['metas_reps']
-        val = m_reps.get(rep, 0.0) if rep else 0.0
-        n_val = c2.number_input("Meta R$", value=float(val))
-        if c3.button("Salvar Meta"):
-            if rep: 
-                m_reps[rep] = n_val
-                if atualizar_campo(uid, "Meta_Rep", m_reps): st.success("OK"); st.rerun()
+@st.cache_data(ttl=60, show_spinner="Carregando dados de vendas...")
+def carregar_dados_vendas():
+    try:
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
+        if df.empty: return None, None, [], None, None
+
+        df.columns = [c.strip() for c in df.columns]
+        cols = df.columns
+        
+        col_valor = next((c for c in cols if 'Valor' in c or 'Liq' in c), None)
+        col_data = next((c for c in cols if 'Gera' in c or 'Data' in c or 'Emis' in c), None)
+        col_nf = next((c for c in cols if 'NF' in c or 'Nota' in c), None)
+        col_vend = next((c for c in cols if 'Vendedor' in c or 'Vend' in c), None)
+        col_rep = next((c for c in cols if 'Representante' in c or 'Rep' in c), None)
+        col_cnpj = next((c for c in cols if 'CNPJ' in c or 'CGC' in c), None)
+        col_pedido = next((c for c in cols if 'Pedido' in c), None)
+
+        if not col_valor or not col_data: return None, None, [], None, None
+
+        # Tratamento de Valor
+        if df[col_valor].dtype == 'O': 
+            df['valor_final'] = df[col_valor].astype(str).str.replace('R$', '', regex=False).str.strip().str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            df['valor_final'] = pd.to_numeric(df['valor_final'], errors='coerce').fillna(0)
+        else: 
+            df['valor_final'] = pd.to_numeric(df[col_valor], errors='coerce').fillna(0)
+
+        # --- CORREÇÃO DO BUG DE DATA AQUI ---
+        # Força converter para String primeiro, remove espaços e usa o formato dd/mm/yyyy
+        df['data_str_temp'] = df[col_data].astype(str).str.strip()
+        
+        # Tenta conversão estrita (dia/mes/ano)
+        df['data_final'] = pd.to_datetime(df['data_str_temp'], format="%d/%m/%Y", errors='coerce')
+        
+        # Fallback: Se falhar (ficar NaT), tenta o parser automático (vai que o excel mandou yyyy-mm-dd)
+        mask_erro = df['data_final'].isna()
+        if mask_erro.any():
+            df.loc[mask_erro, 'data_final'] = pd.to_datetime(df.loc[mask_erro, 'data_str_temp'], dayfirst=True, errors='coerce')
+        
+        if col_nf: df['status_ped'] = df[col_nf].apply(lambda x: 'Faturado' if pd.notnull(x) and str(x).strip() != '' else 'A Faturar')
+        else: df['status_ped'] = 'Desconhecido'
+            
+        if col_cnpj: df[col_cnpj] = df[col_cnpj].astype(str)
+        if not col_pedido and col_nf: col_pedido = col_nf 
+        
+        df['id_pedido'] = df[col_pedido].fillna(0) if col_pedido else df.index
+        lista_reps = sorted(df[col_rep].dropna().unique().tolist()) if col_rep else []
+
+        return df, col_vend, lista_reps, col_pedido, col_nf
+
+    except Exception as e:
+        print(f"Erro vendas: {e}") 
+        return None, None, [], None, None
+
+# --- VISUAL E UTILITÁRIOS ---
+def calcular_dias_uteis_restantes_mes():
+    hoje = date.today()
+    ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
+    fim = date(hoje.year, hoje.month, ultimo)
+    if hoje > fim: return 0
+    return max(0, int(np.busday_count(hoje, fim + timedelta(days=1))))
+
+def calcular_dias_uteis_passados():
+    hoje = date.today()
+    inicio = hoje.replace(day=1)
+    if hoje == inicio: return 1
+    return max(1, int(np.busday_count(inicio, hoje)))
+
+def calcular_curva_abc(df_input):
+    if df_input.empty: return df_input
+    df_abc = df_input.copy().sort_values('valor_final', ascending=False)
+    total = df_abc['valor_final'].sum()
+    if total == 0: return df_abc
+    df_abc['acumulado'] = df_abc['valor_final'].cumsum()
+    df_abc['perc'] = df_abc['acumulado'] / total
+    df_abc['Curva'] = df_abc['perc'].apply(lambda p: 'A' if p <= 0.8 else ('B' if p <= 0.95 else 'C'))
+    return df_abc
+
+def barra_progresso_linda(atual, meta, titulo="Progresso"):
+    pct = (atual / meta * 100) if meta > 0 else 0
+    vis = min(pct, 100) 
+    grad = "linear-gradient(90deg, #ff4b4b 0%, #ffca28 50%, #21c354 100%)"
+    st.markdown(f"""<div style="margin-bottom: 20px;"><div style="display: flex; justify-content: space-between; align-items: flex-end;"><span style="font-weight: bold; font-size: 1.1rem; color: #444;">{titulo}</span><span style="font-weight: bold; font-size: 1.4rem; color: #333;">{pct:.1f}%</span></div><div style="width: 100%; background-color: #e6e6e6; border-radius: 20px; height: 25px;"><div style="width: {vis}%; background: {grad}; height: 100%; border-radius: 20px; transition: width 1s ease-in-out;"></div></div><div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #666; margin-top: 5px;"><span>Realizado: R$ {atual:,.2f}</span><span>Meta: R$ {meta:,.2f}</span></div></div>""", unsafe_allow_html=True)
+
+def converter_df_para_csv(df):
+    return df.to_csv(index=False, sep=";").encode('utf-8')
+
+def render_bolinhas_status(status):
+    mapa = {
+        'Emitido':      ['🔵','⚪','⚪','⚪','⚪'],
+        'Em Separação': ['🔵','🟠','⚪','⚪','⚪'],
+        'Separado':     ['🔵','🟠','🟣','⚪','⚪'],
+        'Faturado':     ['🔵','🟠','🟣','🟤','⚪'],
+        'Enviado':      ['🔵','🟠','🟣','🟤','🟢']
+    }
+    bolas = mapa.get(status, ['⚪','⚪','⚪','⚪','⚪'])
+    return " ".join(bolas)
+
+def extrair_periodo(periodo):
+    if isinstance(periodo, (list, tuple)) and len(periodo) == 2:
+        inicio, fim = periodo
+        if inicio and fim:
+            return inicio, fim
+    return None
+
+# ==============================================================================
+# 🎨 RENDERIZAÇÃO
+# ==============================================================================
+
+def render_dashboard_vendas(u_data, uid, df_filt, col_vend_nome, lista_reps_disponiveis):
+    # Layout Configurado
+    layout_padrao = ["Meta MIC (Empresa)", "Supervisão (Reps)", "Top 10 Clientes (Reps)", "Lista Clientes (Reps)", "Performance Individual", "Meus Top 10 Clientes", "Ranking Geral", "Evolução Diária"]
+    layout_user = u_data.get('layout', '').split(',')
+    layout_user = [l for l in layout_user if l] if layout_user else layout_padrao
+
+    with st.expander("👥 Adicionar / Editar Representantes e Metas", expanded=False):
+        c_add1, c_add2, c_add3 = st.columns([2, 1, 1])
+        metas_reps = u_data['metas_reps']
+        with c_add1:
+            rep_opcoes = sorted(lista_reps_disponiveis)
+            rep_selecionado = st.selectbox("Escolha o Representante:", [""] + rep_opcoes)
+        with c_add2:
+            valor_atual = metas_reps.get(rep_selecionado, 0.0) if rep_selecionado else 0.0
+            nova_meta_rep = st.number_input("Meta (R$):", value=float(valor_atual))
+        with c_add3:
+            st.write(""); st.write("")
+            c_b1, c_b2 = st.columns(2)
+            if c_b1.button("💾", help="Salvar"):
+                if rep_selecionado:
+                    metas_reps[rep_selecionado] = nova_meta_rep
+                    if atualizar_campo(uid, "Meta_Rep", metas_reps): st.success("Salvo!"); st.rerun()
+            if c_b2.button("🗑️", help="Remover"):
+                if rep_selecionado in metas_reps:
+                    del metas_reps[rep_selecionado]
+                    if atualizar_campo(uid, "Meta_Rep", metas_reps): st.rerun()
 
     st.divider()
     
-    # Cálculos Tempo
-    hoje = date.today()
-    ult_dia = calendar.monthrange(hoje.year, hoje.month)[1]
-    fim_mes = date(hoje.year, hoje.month, ult_dia)
-    dias_uteis = max(0, int(np.busday_count(hoje, fim_mes + timedelta(days=1)))) if hoje <= fim_mes else 0
-    dias_pass = max(1, int(np.busday_count(hoje.replace(day=1), hoje))) if hoje >= hoje.replace(day=1) else 1
+    def render_meta_mic():
+        meta = META_GERAL_EMPRESA
+        if 'data_final' in df_filt.columns:
+            total = df_filt['valor_final'].sum()
+            st.subheader("Meta MIC (Empresa)")
+            barra_progresso_linda(total, meta)
 
-    def w_meta_mic():
-        st.markdown("### 🏢 Meta MIC (Empresa)")
-        tot = df_f['valor_final'].sum()
-        falta = max(0, META_GLOBAL - tot)
-        m_nec = falta / dias_uteis if dias_uteis > 0 else 0
-        tick = tot / df_f['id_pedido'].nunique() if df_f['id_pedido'].nunique() > 0 else 0
-        
-        barra_progresso_linda(tot, META_GLOBAL, "Geral")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Total Vendido", f"R$ {tot:,.2f}")
-        k2.metric("Meta Diária Nec.", f"R$ {m_nec:,.2f}")
-        k3.metric("Falta", f"R$ {falta:,.2f}")
-        k4.metric("Ticket Médio", f"R$ {tick:,.2f}")
-        st.divider()
+    def render_supervisao():
+        st.subheader("Supervisão (Reps)")
+        metas_reps = u_data['metas_reps']
+        df_rep = df_filt.groupby(col_vend_nome)['valor_final'].sum().reset_index() if col_vend_nome else pd.DataFrame()
+        if not df_rep.empty:
+            for _, r in df_rep.iterrows():
+                rep = r[col_vend_nome]
+                valor = r['valor_final']
+                meta = float(metas_reps.get(rep, 0.0))
+                barra_progresso_linda(valor, meta, titulo=rep)
+        else:
+            st.info("Sem dados de reps.")
 
-    def w_supervisao():
-        if m_reps:
-            st.markdown("### 🤝 Supervisão")
-            tabs = st.tabs(list(m_reps.keys()))
-            for i, (rn, rm) in enumerate(m_reps.items()):
-                with tabs[i]:
-                    dfr = df_f[df_f['Representante'] == rn]
-                    tr = dfr['valor_final'].sum()
-                    fr = max(0, rm - tr)
-                    mnr = fr / dias_uteis if dias_uteis > 0 else 0
-                    barra_progresso_linda(tr, rm, rn)
-                    c1, c2 = st.columns(2)
-                    c1.metric("Venda", f"R$ {tr:,.2f}")
-                    c2.metric("Diária Nec.", f"R$ {mnr:,.2f}")
-            st.divider()
+    def render_top_clientes():
+        st.subheader("Top 10 Clientes (Reps)")
+        if 'Cliente' in df_filt.columns:
+            top = df_filt.groupby('Cliente')['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False).head(10)
+            st.dataframe(top, use_container_width=True)
+        else:
+            st.info("Coluna Cliente não encontrada.")
 
-    def w_top10():
-        if m_reps:
-            st.write("**Top 10 (Grupo)**")
-            dfg = df_f[df_f['Representante'].isin(m_reps.keys())]
-            if not dfg.empty:
-                top = dfg.groupby('Cliente')['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-                st.plotly_chart(px.bar(top, x='valor_final', y='Cliente', orientation='h', text_auto=True), use_container_width=True)
-            st.divider()
+    def render_lista_clientes():
+        st.subheader("Lista Clientes (Reps)")
+        if 'Cliente' in df_filt.columns:
+            lista = df_filt.groupby('Cliente')['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+            st.dataframe(lista, use_container_width=True)
+        else:
+            st.info("Coluna Cliente não encontrada.")
 
-    def w_lista():
-        if m_reps:
-            st.markdown("### 📋 Carteira")
-            dfg = df_f[df_f['Representante'].isin(m_reps.keys())]
-            with st.expander("Ver Lista"):
-                busca = st.text_input("Filtrar Cliente")
-                gp = dfg.groupby(['Cliente','CNPJ'])['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
-                if busca: gp = gp[gp['Cliente'].str.contains(busca, case=False)]
-                gp['Valor'] = gp['valor_final'].apply(lambda x: f"R$ {x:,.2f}")
-                st.dataframe(gp[['Cliente','CNPJ','Valor']], use_container_width=True)
-            st.divider()
+    def render_performance_individual():
+        st.subheader("Performance Individual")
+        nome_busca = st.text_input("Filtrar meu nome:", value=u_data['nome'].split()[0])
+        if col_vend_nome:
+            df_ind = df_filt[df_filt[col_vend_nome].str.contains(nome_busca, case=False, na=False)]
+            total = df_ind['valor_final'].sum()
+            meta_u = float(u_data['meta'])
+            barra_progresso_linda(total, meta_u)
+        else:
+            st.info("Coluna de vendedor não encontrada.")
 
-    def w_individual():
-        st.markdown(f"### 👤 Performance: {u_data['nome']}")
-        if c_vend:
-            # Filtro Inteligente: Pega primeiro nome do usuario e busca na coluna vendedor
-            nome_parts = u_data['nome'].split()
-            nome_chave = nome_parts[0] if nome_parts else ""
-            
-            dfu = df_f[df_f[c_vend].astype(str).str.contains(nome_chave, case=False, na=False)]
-            tu = dfu['valor_final'].sum()
-            mu = float(u_data['meta'])
-            fu = max(0, mu - tu)
-            mnu = fu / dias_uteis if dias_uteis > 0 else 0
-            tiku = tu / dfu['id_pedido'].nunique() if dfu['id_pedido'].nunique() > 0 else 0
-            
-            barra_progresso_linda(tu, mu, "Meu Resultado")
-            
-            # AGORA IGUAL AO META MIC
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Minhas Vendas", f"R$ {tu:,.2f}")
-            k2.metric("Diária Nec.", f"R$ {mnu:,.2f}")
-            k3.metric("Falta", f"R$ {fu:,.2f}")
-            k4.metric("Ticket Médio", f"R$ {tiku:,.2f}")
-            
-            st.divider()
+    def render_meus_top_clientes():
+        st.subheader("Meus Top 10 Clientes")
+        if col_vend_nome and 'Cliente' in df_filt.columns:
+            nome_busca = st.text_input("Nome vendedor (Top 10 clientes):", value=u_data['nome'].split()[0])
+            df_ind = df_filt[df_filt[col_vend_nome].str.contains(nome_busca, case=False, na=False)]
+            top = df_ind.groupby('Cliente')['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False).head(10)
+            st.dataframe(top, use_container_width=True)
+        else:
+            st.info("Colunas necessárias não encontradas.")
 
-    def w_ranking():
-        if c_vend:
-            st.markdown("### 🏆 Ranking")
-            rk = df_f.groupby(c_vend)['valor_final'].sum().sort_values(ascending=False).head(10).sort_values(ascending=True).reset_index()
-            st.plotly_chart(px.bar(rk, x='valor_final', y=c_vend, orientation='h', text_auto=True), use_container_width=True)
+    def render_ranking():
+        st.subheader("Ranking Geral")
+        if col_vend_nome:
+            ranking = df_filt.groupby(col_vend_nome)['valor_final'].sum().reset_index().sort_values('valor_final', ascending=False)
+            st.dataframe(ranking, use_container_width=True)
+        else:
+            st.info("Coluna de vendedor não encontrada.")
+
+    def render_evolucao():
+        st.subheader("Evolução Diária")
+        if 'data_final' in df_filt.columns:
+            df_evol = df_filt.copy()
+            df_evol['data_plot'] = df_evol['data_final'].dt.date
+            evol = df_evol.groupby('data_plot')['valor_final'].sum().reset_index().sort_values('data_plot')
+            st.plotly_chart(px.line(evol, x='data_plot', y='valor_final', markers=True, title="Evolução Diária"), use_container_width=True)
+        else:
+            st.info("Coluna data_final não encontrada.")
 
     mapa = {
-        "Meta MIC (Empresa)": w_meta_mic, "Supervisão (Reps)": w_supervisao,
-        "Top 10 Clientes (Reps)": w_top10, "Lista Clientes (Reps)": w_lista,
-        "Performance Individual": w_individual, "Ranking Geral": w_ranking
+        "Meta MIC (Empresa)": render_meta_mic,
+        "Supervisão (Reps)": render_supervisao,
+        "Top 10 Clientes (Reps)": render_top_clientes,
+        "Lista Clientes (Reps)": render_lista_clientes,
+        "Performance Individual": render_performance_individual,
+        "Meus Top 10 Clientes": render_meus_top_clientes,
+        "Ranking Geral": render_ranking,
+        "Evolução Diária": render_evolucao
     }
-    
-    for item in l_user:
+
+    for item in layout_user:
         if item in mapa: mapa[item]()
 
-# ==============================================================================
-# 📦 EXPEDIÇÃO
-# ==============================================================================
-def render_exp(urole, uname, dfv, cped, cnf, p_dates):
-    st.markdown("## 📦 Expedição")
-    roles = {'sep': ['Expedicao','ADM'], 'fat': ['Vendedor','Expedicao','ADM'], 'env': ['Expedicao','ADM']}
+def render_expedicao(user_role, user_name, df_vendas, col_ped_vendas, col_nf_vendas, periodo_selecionado):
+    st.markdown("## 📦 Controle de Expedição")
     
-    with st.spinner("Sincronizando..."):
-        dfe = carregar_dados_expedicao(dfv, cped, cnf)
+    pode_separar = user_role in ['Expedicao', 'ADM']
+    pode_faturar = user_role in ['Vendedor', 'Expedicao', 'ADM']
+    pode_enviar = user_role in ['Expedicao', 'ADM']
+    pode_voltar = user_role in ['ADM', 'Expedicao'] 
 
-    # FILTRO DATA
-    if not dfe.empty and p_dates and len(p_dates) == 2:
-        dfe['dt_obj'] = pd.to_datetime(dfe['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.date
-        dfe = dfe[(dfe['dt_obj'] >= p_dates[0]) & (dfe['dt_obj'] <= p_dates[1])]
+    with st.spinner("Sincronizando WMS..."):
+        df_exp = carregar_dados_expedicao(df_vendas, col_ped_vendas, col_nf_vendas)
 
-    c1, c2 = st.columns([3,1])
-    txt = c1.text_input("🔎 Buscar Pedido")
-    # key='f_st_exp' impede o conflito de abas!
-    stt = c2.selectbox("Status", ["Todos","Emitidos","Separando","Faturados","Enviados"], key='f_st_exp')
+    # LÓGICA DE FILTRO DE DATA
+    if not df_exp.empty:
+        df_exp['data_obj'] = pd.to_datetime(df_exp['Data_Emitido'], format="%d/%m/%Y %H:%M", errors='coerce').dt.date
+        periodo = extrair_periodo(periodo_selecionado)
+        if periodo:
+            inicio, fim = periodo
+            df_exp = df_exp[(df_exp['data_obj'] >= inicio) & (df_exp['data_obj'] <= fim)]
 
-    mask = [True] * len(dfe)
-    if stt == "Emitidos": mask = dfe['Status_Atual'] == "Emitido"
-    elif stt == "Separando": mask = dfe['Status_Atual'].isin(["Em Separação","Separado"])
-    elif stt == "Faturados": mask = dfe['Status_Atual'] == "Faturado"
-    elif stt == "Enviados": mask = dfe['Status_Atual'] == "Enviado"
+    c_f1, c_f2 = st.columns([3, 1])
+    termo = c_f1.text_input("🔎 Buscar Pedido, Cliente ou Vendedor")
+    filtro_status = c_f2.selectbox("Filtrar Status", ["Todos", "Emitidos", "Separando", "Faturados", "Enviados"])
     
-    view = dfe[mask]
-    if txt: 
-        t = txt.lower()
-        view = view[view['Pedido'].str.contains(t, case=False) | view['Cliente'].str.lower().str.contains(t)]
+    mask_status = [True] * len(df_exp)
+    if filtro_status == "Emitidos": mask_status = df_exp['Status_Atual'] == "Emitido"
+    elif filtro_status == "Separando": mask_status = df_exp['Status_Atual'].isin(["Em Separação", "Separado"])
+    elif filtro_status == "Faturados": mask_status = df_exp['Status_Atual'] == "Faturado"
+    elif filtro_status == "Enviados": mask_status = df_exp['Status_Atual'] == "Enviado"
     
-    st.caption(f"Pedidos: {len(view)}")
+    df_view = df_exp[mask_status]
+
+    if termo:
+        t = termo.lower()
+        df_view = df_view[
+            df_view['Pedido'].str.lower().str.contains(t) | 
+            df_view['Cliente'].str.lower().str.contains(t) |
+            df_view['Vendedor'].str.lower().str.contains(t)
+        ]
+    
+    df_view = df_view.iloc[::-1]
+
+    st.info(f"Mostrando {len(df_view)} pedidos no período selecionado.")
     st.divider()
-
-    for i, r in view.iterrows():
-        s = r['Status_Atual']
-        p = r['Pedido']
+    
+    for i, row in df_view.iterrows():
+        status = row['Status_Atual']
+        ped = row['Pedido']
+        bolinhas = render_bolinhas_status(status)
+        
         with st.container():
-            k1, k2, k3, k4 = st.columns([1.5, 3, 2, 2])
-            k1.markdown(f"**{p}**"); k1.caption(r['Vendedor'])
-            k2.markdown(f"**{r['Cliente']}**"); k2.write(f"Status: **{s}**")
-            k3.caption(f"📅 {r['Data_Emitido']}")
-            
-            # Botões
-            if s == "Emitido" and urole in roles['sep']:
-                if k4.button("Separar", key=f"b1{p}"): atualizar_status(p,"Em Separação","Data_Separacao","User_Separacao",uname,"Iniciou Sep"); st.rerun()
-            elif s == "Em Separação" and urole in roles['sep']:
-                if k4.button("Finalizar", key=f"b2{p}"): atualizar_status(p,"Separado","Data_Separado","User_Separado",uname,"Fim Sep"); st.rerun()
-            elif s == "Separado" and urole in roles['fat']:
-                if k4.button("Faturar", key=f"b3{p}"): atualizar_status(p,"Faturado","Data_Faturado","User_Faturado",uname,"Faturou"); st.rerun()
-            elif s == "Faturado" and urole in roles['env']:
-                if k4.button("Enviar", key=f"b4{p}"): atualizar_status(p,"Enviado","Data_Enviado","User_Enviado",uname,"Enviou"); st.rerun()
+            c1, c2, c3, c4 = st.columns([1.5, 3, 2.5, 2])
+            with c1:
+                st.markdown(f"### 📦 {ped}")
+                st.caption(f"Vend: {row['Vendedor']}")
+            with c2:
+                st.markdown(f"**{row['Cliente']}**")
+                st.write(f"{bolinhas} **{status}**")
+            with c3:
+                txt_time = ""
+                if row['Data_Emitido']: txt_time += f"📅 Emit: {row['Data_Emitido']}\n"
+                if row['Data_Separado']: txt_time += f"📦 Sep: {row['Data_Separado']} ({row['User_Separado']})\n"
+                if row['Data_Faturado']: txt_time += f"💲 Fat: {row['Data_Faturado']} ({row['User_Faturado']})\n"
+                if row['Data_Enviado']: txt_time += f"🚚 Env: {row['Data_Enviado']} ({row['User_Enviado']})"
+                st.caption(txt_time)
+                
+                log_txt = str(row['Log_Historico']) if pd.notnull(row['Log_Historico']) else ""
+                if log_txt:
+                    with st.popover("📜 Ver Histórico"):
+                        st.text(log_txt.replace(" | ", "\n"))
+
+            with c4:
+                if status == "Emitido":
+                    if pode_separar:
+                        if st.button("▶️ Separar", key=f"s1_{ped}"):
+                            atualizar_status_expedicao(ped, "Em Separação", "Data_Separacao", "User_Separacao", user_name, "Iniciou Separação"); st.rerun()
+                    else: st.info("Aguardando Estoque")
+                
+                elif status == "Em Separação":
+                    if pode_separar:
+                        if st.button("✅ Finalizar Sep.", key=f"s2_{ped}"):
+                            atualizar_status_expedicao(ped, "Separado", "Data_Separado", "User_Separado", user_name, "Finalizou Separação"); st.rerun()
+                        if pode_voltar and st.button("↩️ Voltar", key=f"v1_{ped}"):
+                             atualizar_status_expedicao(ped, "Emitido", "", "", user_name, "Voltou para Emitido"); st.rerun()
+                    else: st.warning("Separando...")
+                
+                elif status == "Separado":
+                    if pode_faturar:
+                        if st.button("💲 Marcar Faturado", key=f"s3_{ped}"):
+                            atualizar_status_expedicao(ped, "Faturado", "Data_Faturado", "User_Faturado", user_name, "Marcou Faturado"); st.rerun()
+                    if pode_voltar and st.button("↩️ Voltar Sep.", key=f"v2_{ped}"):
+                             atualizar_status_expedicao(ped, "Em Separação", "", "", user_name, "Voltou para Separação"); st.rerun()
+                
+                elif status == "Faturado":
+                    if pode_enviar:
+                        if st.button("🚚 Enviar", key=f"s4_{ped}"):
+                            atualizar_status_expedicao(ped, "Enviado", "Data_Enviado", "User_Enviado", user_name, "Despachou"); st.rerun()
+                    else: st.success("Pronto p/ Envio")
+                    if pode_voltar and st.button("↩️ Voltar Fat.", key=f"v3_{ped}"):
+                             atualizar_status_expedicao(ped, "Separado", "", "", user_name, "Cancelou Faturamento (Voltou)"); st.rerun()
+                
+                elif status == "Enviado":
+                    st.success("Concluído")
+                    if pode_voltar and st.button("↩️ Voltar Envio", key=f"v4_{ped}"):
+                             atualizar_status_expedicao(ped, "Faturado", "", "", user_name, "Cancelou Envio (Voltou)"); st.rerun()
+
             st.markdown("---")
 
 # ==============================================================================
-# 🚀 MAIN
+# 🏁 FLUXO PRINCIPAL
 # ==============================================================================
+
 if 'usuario_logado' not in st.session_state: st.session_state['usuario_logado'] = None
 
-df, cvend, lreps, cped, cnf = carregar_dados_vendas()
-if df is None: df = pd.DataFrame()
+df, col_vend, lista_reps, col_ped, col_nf = carregar_dados_vendas()
+if df is None:
+    df = pd.DataFrame(columns=["valor_final", "data_final", "status_ped", "id_pedido"])
+    lista_reps = []
 
-# LOGIN
-if not st.session_state['usuario_logado']:
-    c1, c2, c3 = st.columns([1,2,1])
+if st.session_state['usuario_logado'] is None:
+    c1, c2, c3 = st.columns([3, 2, 3])
     with c2:
-        if os.path.exists(ARQUIVO_LOGO): st.image(carregar_imagem_segura(ARQUIVO_LOGO), width=200)
+        st.write(""); st.write("")
+        if os.path.exists(ARQUIVO_LOGO):
+            img = carregar_imagem_segura(ARQUIVO_LOGO)
+            if img: st.image(img, use_container_width=True)
         else: st.title("MIC System")
-        
-        tab_ent, tab_cad = st.tabs(["Login", "Cadastro"])
-        with tab_ent:
-            u = st.text_input("User").strip()
-            p = st.text_input("Pass", type="password").strip()
-            if st.button("Entrar", use_container_width=True):
+        t1, t2 = st.tabs(["Entrar", "Criar Conta"])
+        with t1:
+            u = st.text_input("Usuário").strip()
+            p = st.text_input("Senha", type="password").strip()
+            if st.button("Acessar", use_container_width=True):
                 if u in usuarios_dict and usuarios_dict[u]['senha'] == p:
                     st.session_state['usuario_logado'] = u; st.rerun()
-                else: st.error("Erro")
-        with tab_cad:
-            nu = st.text_input("Novo User").strip()
-            np_ = st.text_input("Nova Pass", type="password").strip()
+                else: st.error("Negado.")
+            if st.button("🔄", help="Atualizar"): st.cache_data.clear(); st.rerun()
+        with t2:
+            nu = st.text_input("Novo Usuário").strip()
+            np_ = st.text_input("Nova Senha", type="password").strip()
             nn = st.text_input("Nome")
-            if st.button("Criar", use_container_width=True):
-                if nu and nu != "__GLOBAL__" and nu not in usuarios_dict:
-                    salvar_novo_usuario(nu, np_, 10000.0, nn); st.success("Criado!"); time.sleep(1); st.rerun()
+            if st.button("Cadastrar", use_container_width=True):
+                if nu and np_ and nu != "__GLOBAL__":
+                    if nu not in usuarios_dict:
+                        if salvar_novo_usuario(nu, np_, 10000.0, nn): st.success("OK! Logue."); 
+                    else: st.error("Existe.")
 else:
-    # LOGADO
     uid = st.session_state['usuario_logado']
-    udata = usuarios_dict.get(uid, {})
-    cargo = udata.get('cargo', 'Vendedor')
+    if uid not in usuarios_dict: st.session_state['usuario_logado'] = None; st.rerun()
+    u_data = usuarios_dict[uid]
+    cargo = u_data['cargo']
 
-    # Header
-    c_h1, c_h2 = st.columns([6,1])
-    with c_h1: 
-        if os.path.exists(ARQUIVO_LOGO): st.image(carregar_imagem_segura(ARQUIVO_LOGO), width=100)
+    h1, h2 = st.columns([6, 1])
+    with h1:
+        if os.path.exists(ARQUIVO_LOGO):
+            img = carregar_imagem_segura(ARQUIVO_LOGO)
+            if img: st.image(img, width=120)
         else: st.title("MIC")
-    with c_h2:
-        if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
+    with h2:
+        st.write("")
+        with st.popover("⚙️", use_container_width=True):
+            st.markdown(f"**{u_data['nome']}**")
+            st.caption(f"Cargo: {cargo}")
+            if cargo == "ADM":
+                with st.expander("👑 Admin: Alterar Cargos"):
+                    usr_edit = st.selectbox("Usuário:", list(usuarios_dict.keys()))
+                    cargo_edit = st.selectbox("Novo Cargo:", ["Vendedor", "Expedicao", "ADM"])
+                    if st.button("Alterar Cargo"):
+                        if atualizar_campo(usr_edit, "Cargo", cargo_edit): st.success("Atualizado!"); st.rerun()
+            st.markdown("---")
+            n_nome = st.text_input("Nome:", value=u_data['nome'])
+            if st.button("Salvar Nome"): atualizar_campo(uid, "Nome", n_nome); st.rerun()
+            n_senha = st.text_input("Nova Senha", type="password")
+            if st.button("Salvar Senha"): atualizar_campo(uid, "Senha", n_senha); st.rerun()
+            st.markdown("---")
+            if st.button("Sair"): st.session_state['usuario_logado'] = None; st.rerun()
 
-    # FILTROS GLOBAIS
-    st.markdown("---")
-    cf1, cf2 = st.columns(2)
-    st_filtro = cf1.selectbox("Status Venda", ["Todos","Faturado","A Faturar"], key='f_st_glob')
-    
-    hj = date.today()
-    ult = calendar.monthrange(hj.year, hj.month)[1]
-    
-    # ⚠️ AQUI: Filtro padrão do dia 1 até o último dia do mês ATUAL
-    dates = cf2.date_input("📅 Período de Análise", [hj.replace(day=1), date(hj.year, hj.month, ult)])
+    # --- DEBUGGER (Escondido num expander) ---
+    # Se o gráfico continuar vazio, abra isso pra ver se a coluna 'data_final' não está toda "NaT"
+    with st.expander("🕵️ Debug Dados (Apenas para verificação)"):
+        st.write("Amostra dos dados carregados:")
+        st.write(df[['data_final', 'valor_final']].head())
+        st.write("Tipos:")
+        st.write(df.dtypes)
 
-    # APLICA FILTRO
-    df_filt = df.copy()
-    if not df_filt.empty and isinstance(dates, list) and len(dates) == 2:
-        df_filt = df_filt[(df_filt['data_final'].dt.date >= dates[0]) & (df_filt['data_final'].dt.date <= dates[1])]
-        # DEBUG VISUAL PARA VOCÊ VER SE ESTÁ FUNCIONANDO
-        st.caption(f"📊 Filtrando de **{dates[0].strftime('%d/%m/%Y')}** até **{dates[1].strftime('%d/%m/%Y')}**. Pedidos encontrados: {len(df_filt)}")
+    st.divider()
+    c_global1, c_global2 = st.columns(2)
+    status_sel_global = c_global1.selectbox("Status Vendas", ["Todos", "Faturado", "A Faturar"])
     
-    if st_filtro != "Todos":
-        df_filt = df_filt[df_filt['status_ped'] == st_filtro]
+    hoje = date.today()
+    ultimo = calendar.monthrange(hoje.year, hoje.month)[1]
+    periodo_global = c_global2.date_input("Período de Análise", [hoje.replace(day=1), date(hoje.year, hoje.month, ultimo)])
 
-    # RENDERIZAÇÃO
+    # Filtro Global
+    df_filt_vendas = df.copy()
+    periodo = extrair_periodo(periodo_global)
+    if periodo:
+        inicio, fim = periodo
+        df_filt_vendas = df_filt_vendas[(df_filt_vendas['data_final'].dt.date >= inicio) & (df_filt_vendas['data_final'].dt.date <= fim)]
+    
+    if status_sel_global != "Todos":
+        df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
+
     if cargo == "Expedicao":
-        render_exp(cargo, udata['nome'], df, cped, cnf, dates)
+        render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
     else:
-        # TABS fixas
-        t1, t2 = st.tabs(["📊 Dashboard", "📦 Expedição"])
-        with t1: render_dash(udata, uid, df_filt, cvend, lreps)
-        with t2: render_exp(cargo, udata['nome'], df, cped, cnf, dates)
+        # --- CORREÇÃO DA ABA QUE PULA ---
+        # A gente não recria as tabs condicionalmente dentro do if/else
+        # Apenas renderiza o conteúdo
+        tab1, tab2 = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
+        
+        with tab1:
+            render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
+        with tab2:
+            render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
