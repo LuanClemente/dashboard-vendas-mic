@@ -49,53 +49,6 @@ def carregar_imagem_segura(caminho_imagem):
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# ==============================================================================
-# 📌 ABAS / WORKSHEETS (Padronização)
-# ==============================================================================
-WS_VENDAS_DEFAULT = "lista"          # ajuste se sua aba de vendas tiver outro nome
-WS_EXPEDICAO = "Expedicao"
-WS_EXPEDICAO_LOG = "Expedicao_Log"
-
-def _retry(fn, tentativas=3, espera=1.0):
-    """Retry simples pra falhas intermitentes do Google Sheets."""
-    for i in range(tentativas):
-        try:
-            return fn()
-        except Exception:
-            if i == tentativas - 1:
-                raise
-            time.sleep(espera)
-
-def ler_aba(worksheet, ttl=0):
-    return _retry(lambda: conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet=worksheet, ttl=ttl))
-
-def escrever_aba(worksheet, df):
-    return _retry(lambda: conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet=worksheet, data=df))
-
-def append_log_expedicao(pedido, usuario, acao, status_de="", status_para=""):
-    """Append-only na aba Expedicao_Log (auditoria)."""
-    row = {
-        "Quando": get_data_hora_sp(),
-        "Pedido": str(pedido),
-        "Usuario": str(usuario),
-        "Acao": str(acao),
-        "Status_De": str(status_de),
-        "Status_Para": str(status_para),
-    }
-    try:
-        df_log = ler_aba(WS_EXPEDICAO_LOG, ttl=0)
-        if df_log is None or df_log.empty:
-            df_log = pd.DataFrame(columns=list(row.keys()))
-    except Exception:
-        df_log = pd.DataFrame(columns=list(row.keys()))
-    df_log = pd.concat([df_log, pd.DataFrame([row])], ignore_index=True)
-    try:
-        escrever_aba(WS_EXPEDICAO_LOG, df_log.fillna(""))
-    except Exception:
-        # Não derruba o app se falhar log
-        pass
-
-
 def get_data_hora_sp():
     return datetime.now(FUSO_SP).strftime("%d/%m/%Y %H:%M")
 
@@ -178,7 +131,7 @@ def salvar_novo_usuario(login, senha, meta, nome):
 def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
     cols_exp = ['Pedido', 'Cliente', 'Vendedor', 'Status_Atual', 
                 'Data_Emitido', 'Data_Separacao', 'Data_Separado', 'Data_Faturado', 'Data_Enviado',
-                'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico', 'Versao']
+                'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
         df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
@@ -224,8 +177,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                         'Data_Emitido': agora,
                         'Data_Faturado': agora if tem_nf else '',
                         'User_Faturado': 'Sistema' if tem_nf else '',
-                        'Log_Historico': f"[{agora}] Importado como {status_ini}",
-                        'Versao': 0
+                        'Log_Historico': f"[{agora}] Importado como {status_ini}"
                     })
                 
                 if novos_dados:
@@ -241,13 +193,6 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                         df_exp.at[i, 'Status_Atual'] = 'Faturado'
                         if not df_exp.at[i, 'Data_Faturado']: df_exp.at[i, 'Data_Faturado'] = get_data_hora_sp()
                         df_exp.at[i, 'User_Faturado'] = 'Sistema (Auto)'
-                        try:
-                            v = int(df_exp.at[i, 'Versao']) if str(df_exp.at[i, 'Versao']).strip() != '' else 0
-                        except Exception:
-                            v = 0
-                        df_exp.at[i, 'Versao'] = v + 1
-                        # Log append-only
-                        append_log_expedicao(pedido=ped, usuario='Sistema (Auto)', acao='Auto: NF detectada', status_de='', status_para='Faturado')
                         mudou_algo = True
 
             if mudou_algo:
@@ -290,7 +235,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 def carregar_dados_vendas():
     try:
         # Lê a planilha mestra
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="lista", ttl=0) 
         if df.empty: return None, None, [], None, None
 
         # Limpa espaços extras nos nomes das colunas
