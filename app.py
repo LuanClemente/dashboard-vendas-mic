@@ -49,6 +49,8 @@ def carregar_imagem_segura(caminho_imagem):
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+WS_VENDAS_DEFAULT = "lista"
+
 def get_data_hora_sp():
     return datetime.now(FUSO_SP).strftime("%d/%m/%Y %H:%M")
 
@@ -235,7 +237,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 def carregar_dados_vendas():
     try:
         # Lê a planilha mestra
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="lista", ttl=0) 
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet=WS_VENDAS_DEFAULT, ttl=0) 
         if df.empty: return None, None, [], None, None
 
         # Limpa espaços extras nos nomes das colunas
