@@ -48,7 +48,6 @@ def carregar_imagem_segura(caminho_imagem):
 # ==============================================================================
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-
 WS_VENDAS_DEFAULT = "lista"
 
 def get_data_hora_sp():
@@ -671,6 +670,19 @@ else:
     
     if status_sel_global != "Todos":
         df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
+
+
+# --- DEBUG (ajuda a diagnosticar quando o Dashboard fica vazio) ---
+with st.expander("🛠️ Debug Vendas (clique para ver)", expanded=False):
+    st.write("Worksheet vendas:", WS_VENDAS_DEFAULT)
+    st.write("Linhas carregadas:", 0 if df is None else len(df))
+    if df is not None and not df.empty:
+        st.write("Colunas:", list(df.columns))
+        if 'data_final' in df.columns:
+            st.write("Data min/max:", df['data_final'].min(), df['data_final'].max())
+    st.write("Linhas após filtros:", len(df_filt_vendas))
+    if not df_filt_vendas.empty:
+        st.dataframe(df_filt_vendas.head(20), use_container_width=True)
 
     if cargo == "Expedicao":
         render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
