@@ -675,20 +675,22 @@ else:
 # --- DEBUG (ajuda a diagnosticar quando o Dashboard fica vazio) ---
 with st.expander("🛠️ Debug Vendas (clique para ver)", expanded=False):
     st.write("Worksheet vendas:", WS_VENDAS_DEFAULT)
-    st.write("Linhas carregadas:", 0 if df is None else len(df))
+
+    linhas = 0
+    try:
+        linhas = 0 if df is None else len(df)
+    except Exception:
+        pass
+    st.write("Linhas carregadas:", linhas)
+
     if df is not None and not df.empty:
         st.write("Colunas:", list(df.columns))
-        if 'data_final' in df.columns:
-            st.write("Data min/max:", df['data_final'].min(), df['data_final'].max())
-    st.write("Linhas após filtros:", len(df_filt_vendas))
-    if not df_filt_vendas.empty:
-        st.dataframe(df_filt_vendas.head(20), use_container_width=True)
+        if "data_final" in df.columns:
+            st.write("Data min/max:", df["data_final"].min(), df["data_final"].max())
 
-    if cargo == "Expedicao":
-        render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
+    if "df_filt_vendas" in locals():
+        st.write("Linhas após filtros:", len(df_filt_vendas))
+        if not df_filt_vendas.empty:
+            st.dataframe(df_filt_vendas.head(20), use_container_width=True)
     else:
-        tab1, tab2 = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
-        with tab1:
-            render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
-        with tab2:
-            render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
+        st.write("Linhas após filtros: (df_filt_vendas não definido — provavelmente não houve dados para filtrar)")
