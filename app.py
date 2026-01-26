@@ -21,7 +21,9 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
-URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
+URL_PLANILHA_VENDAS = st.secrets.get("URL_PLANILHA_VENDAS") or "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit"
+URL_PLANILHA_USUARIOS = st.secrets.get("URL_PLANILHA_USUARIOS") or "https://docs.google.com/spreadsheets/d/1CgOP8TlMM8yaLVVA3_Lj-Yg0NXA3QyUXBtO9eFCIPOw/edit"
+URL_PLANILHA_MESTRA = URL_PLANILHA_VENDAS
 
 st.markdown("""
     <style>
@@ -48,7 +50,6 @@ def carregar_imagem_segura(caminho_imagem):
 # ==============================================================================
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-WS_VENDAS_DEFAULT = "lista"
 
 def get_data_hora_sp():
     return datetime.now(FUSO_SP).strftime("%d/%m/%Y %H:%M")
@@ -135,7 +136,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=2)
         if df_exp.empty: df_exp = pd.DataFrame(columns=cols_exp)
         else:
             for c in cols_exp:
@@ -197,7 +198,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                         mudou_algo = True
 
             if mudou_algo:
-                try: conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
+                try: conn.update(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", data=df_exp.fillna(""))
                 except APIError: pass
     except: pass
     
@@ -205,8 +206,8 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, usuario_nome, log_msg):
     try:
-        try: df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
-        except: time.sleep(1); df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        try: df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=0)
+        except: time.sleep(1); df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=0)
         
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
@@ -221,7 +222,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             if log_ant == "nan": log_ant = ""
             df_exp.at[i, 'Log_Historico'] = log_ant + f" | [{agora}] {log_msg}"
             
-            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
+            conn.update(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", data=df_exp.fillna(""))
             return True
         return False
     except Exception as e:
@@ -236,7 +237,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 def carregar_dados_vendas():
     try:
         # Lê a planilha mestra
-        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet=WS_VENDAS_DEFAULT, ttl=0) 
+        df = conn.read(spreadsheet=URL_PLANILHA_VENDAS, ttl=0) 
         if df.empty: return None, None, [], None, None
 
         # Limpa espaços extras nos nomes das colunas
@@ -671,26 +672,11 @@ else:
     if status_sel_global != "Todos":
         df_filt_vendas = df_filt_vendas[df_filt_vendas['status_ped'] == status_sel_global]
 
-
-# --- DEBUG (ajuda a diagnosticar quando o Dashboard fica vazio) ---
-with st.expander("🛠️ Debug Vendas (clique para ver)", expanded=False):
-    st.write("Worksheet vendas:", WS_VENDAS_DEFAULT)
-
-    linhas = 0
-    try:
-        linhas = 0 if df is None else len(df)
-    except Exception:
-        pass
-    st.write("Linhas carregadas:", linhas)
-
-    if df is not None and not df.empty:
-        st.write("Colunas:", list(df.columns))
-        if "data_final" in df.columns:
-            st.write("Data min/max:", df["data_final"].min(), df["data_final"].max())
-
-    if "df_filt_vendas" in locals():
-        st.write("Linhas após filtros:", len(df_filt_vendas))
-        if not df_filt_vendas.empty:
-            st.dataframe(df_filt_vendas.head(20), use_container_width=True)
+    if cargo == "Expedicao":
+        render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
     else:
-        st.write("Linhas após filtros: (df_filt_vendas não definido — provavelmente não houve dados para filtrar)")
+        tab1, tab2 = st.tabs(["📊 Dashboard Vendas", "📦 Expedição (WMS)"])
+        with tab1:
+            render_dashboard_vendas(u_data, uid, df_filt_vendas, col_vend, lista_reps)
+        with tab2:
+            render_expedicao(cargo, u_data['nome'], df, col_ped, col_nf, periodo_global)
