@@ -78,7 +78,7 @@ def transicionar(novo_status, campo_data):
     atual_linha = atual.loc[idx]
     if atual_linha["Versao"] != linha["Versao"]:
         st.warning("Esse pedido foi atualizado por outra pessoa. Recarregando...")
-        st.experimental_rerun()
+        st.rerun()
 
     atual.loc[idx, "Status"] = novo_status
     atual.loc[idx, campo_data] = agora().strftime("%d/%m/%Y %H:%M:%S")
@@ -97,7 +97,7 @@ def transicionar(novo_status, campo_data):
     })
 
     st.success(f"Pedido {pedido} → {novo_status}")
-    st.experimental_rerun()
+    st.rerun()
 
 with col1:
     if st.button("Separar"):

@@ -67,7 +67,7 @@ def normalizar_nome_coluna(nome):
 # --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(ttl=5) 
+        df = conn.read(spreadsheet=URL_PLANILHA_USUARIOS, worksheet="Usuarios", ttl=5) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         

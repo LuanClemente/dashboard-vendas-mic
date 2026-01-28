@@ -3,3 +3,6 @@ pandas
 plotly
 numpy
 st-gsheets-connection
+Pillow
+gspread
+pytz
