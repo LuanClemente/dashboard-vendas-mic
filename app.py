@@ -21,9 +21,7 @@ st.set_page_config(page_title="Sistema Integrado MIC", layout="wide", page_icon=
 
 ARQUIVO_LOGO = "logo.png"
 FUSO_SP = pytz.timezone('America/Sao_Paulo')
-URL_PLANILHA_VENDAS = st.secrets.get("URL_PLANILHA_VENDAS") or "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit"
-URL_PLANILHA_USUARIOS = st.secrets.get("URL_PLANILHA_USUARIOS") or "https://docs.google.com/spreadsheets/d/1CgOP8TlMM8yaLVVA3_Lj-Yg0NXA3QyUXBtO9eFCIPOw/edit"
-URL_PLANILHA_MESTRA = URL_PLANILHA_VENDAS
+URL_PLANILHA_MESTRA = "https://docs.google.com/spreadsheets/d/1x6p2koSoPRfs6yB2-8lT9JibgWL1cjlLriq0EnxUlj0/edit?gid=1148960899#gid=1148960899"
 
 st.markdown("""
     <style>
@@ -67,7 +65,7 @@ def normalizar_nome_coluna(nome):
 # --- GESTÃO DE USUÁRIOS ---
 def inicializar_e_carregar_usuarios():
     try:
-        df = conn.read(spreadsheet=URL_PLANILHA_USUARIOS, worksheet="Usuarios", ttl=5) 
+        df = conn.read(ttl=5) 
         colunas_necessarias = ["Login", "Senha", "Meta", "Nome", "Meta_Rep", "Config_Layout", "Cargo"]
         if df.empty: return pd.DataFrame(columns=colunas_necessarias)
         
@@ -136,7 +134,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                 'User_Separacao', 'User_Separado', 'User_Faturado', 'User_Enviado', 'Log_Historico']
     
     try:
-        df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=2)
+        df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=2)
         if df_exp.empty: df_exp = pd.DataFrame(columns=cols_exp)
         else:
             for c in cols_exp:
@@ -198,7 +196,7 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
                         mudou_algo = True
 
             if mudou_algo:
-                try: conn.update(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", data=df_exp.fillna(""))
+                try: conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
                 except APIError: pass
     except: pass
     
@@ -206,8 +204,8 @@ def carregar_dados_expedicao(df_vendas_atual, col_pedido_vendas, col_nf_vendas):
 
 def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, usuario_nome, log_msg):
     try:
-        try: df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=0)
-        except: time.sleep(1); df_exp = conn.read(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", ttl=0)
+        try: df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
+        except: time.sleep(1); df_exp = conn.read(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", ttl=0)
         
         df_exp['Pedido'] = df_exp['Pedido'].astype(str).str.split('.').str[0].str.strip()
         idx = df_exp.index[df_exp['Pedido'] == str(pedido)].tolist()
@@ -222,7 +220,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
             if log_ant == "nan": log_ant = ""
             df_exp.at[i, 'Log_Historico'] = log_ant + f" | [{agora}] {log_msg}"
             
-            conn.update(spreadsheet=URL_PLANILHA_VENDAS, worksheet="Expedicao", data=df_exp.fillna(""))
+            conn.update(spreadsheet=URL_PLANILHA_MESTRA, worksheet="Expedicao", data=df_exp.fillna(""))
             return True
         return False
     except Exception as e:
@@ -237,7 +235,7 @@ def atualizar_status_expedicao(pedido, novo_status, coluna_data, coluna_user, us
 def carregar_dados_vendas():
     try:
         # Lê a planilha mestra
-        df = conn.read(spreadsheet=URL_PLANILHA_VENDAS, ttl=0) 
+        df = conn.read(spreadsheet=URL_PLANILHA_MESTRA, ttl=0) 
         if df.empty: return None, None, [], None, None
 
         # Limpa espaços extras nos nomes das colunas
