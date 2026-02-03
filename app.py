@@ -14,6 +14,44 @@ import time
 import re  # <--- ADICIONADO PARA LIMPEZA FORTE
 from gspread.exceptions import APIError
 
+
+def converter_valor_monetario(v):
+    """Converte valores monetários vindo do Sheets (texto OU número) para float.
+
+    Aceita:
+    - 1234.56 (float/int)
+    - "1234,56" (pt-BR)
+    - "1.234,56" (pt-BR com milhar)
+    - "1234.56" (ponto decimal)
+    - "R$ 1.234,56"
+    """
+    if v is None:
+        return 0.0
+    # Se já é número
+    if isinstance(v, (int, float)):
+        try:
+            return float(v)
+        except Exception:
+            return 0.0
+    s = str(v).strip()
+    if s == "" or s.lower() in {"nan", "none"}:
+        return 0.0
+    s = s.replace("R$", "").replace(" ", "")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        if "," in s and "." not in s:
+            s = s.replace(".", "").replace(",", ".")
+    import re as _re
+    s = _re.sub(r"[^0-9\-\.]", "", s)
+    try:
+        return float(s) if s not in {"", "-", "."} else 0.0
+    except Exception:
+        return 0.0
+
 # ==============================================================================
 # ⚙️ CONFIGURAÇÕES INICIAIS
 # ==============================================================================
@@ -263,44 +301,14 @@ def carregar_dados_vendas():
         # --- CORREÇÃO 1: LIMPEZA DE VALOR ---
         # Função para limpar R$, espaços e sujeira
         def limpar_valor_regex(valor):
-    """Converte valores monetários vindo do Sheets (texto OU número) para float.
-    Suporta:
-    - 1234,56  (pt-BR)
-    - 1.234,56 (pt-BR com milhar)
-    - 1234.56  (ponto decimal)
-    - números já numéricos (float/int)
-    """
-    if pd.isna(valor):
-        return 0.0
-    # Se já vier numérico do Sheets, não inventa moda
-    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
-        try:
-            return float(valor)
-        except Exception:
-            return 0.0
-
-    s = re.sub(r'[^\d,.-]', '', str(valor)).strip()
-    if not s:
-        return 0.0
-
-    has_comma = ',' in s
-    has_dot = '.' in s
-
-    # Caso clássico BR: tem vírgula decimal. Se também tem ponto, ponto é milhar.
-    if has_comma:
-        s = s.replace('.', '').replace(',', '.')
-    else:
-        # Sem vírgula: assume ponto decimal (ex.: 1234.56). Remove só separadores de milhar comuns
-        # (alguns vêm como 1 234.56 ou 1'234.56 já removidos pelo regex)
-        # Se tiver mais de um ponto, trata como milhar (ex.: 1.234.567)
-        if s.count('.') > 1:
-            s = s.replace('.', '')
-        # senão mantém o ponto como decimal
-
-    try:
-        return float(s)
-    except Exception:
-        return 0.0
+            if pd.isna(valor): return 0.0
+            # Deixa só números, ponto, vírgula e sinal de menos
+            s = re.sub(r'[^\d,.-]', '', str(valor)) 
+            if not s: return 0.0
+            # Padrão brasileiro: remove ponto de milhar, troca vírgula decimal por ponto
+            s = s.replace('.', '').replace(',', '.')
+            try: return float(s)
+            except: return 0.0
 
         df['valor_final'] = df[col_valor].apply(limpar_valor_regex)
 
